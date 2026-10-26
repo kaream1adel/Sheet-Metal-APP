@@ -2,6 +2,9 @@
 import { h, toast, money, fmtDate, formModal } from './ui.js';
 import { get, post, patch } from './api.js';
 import { renderSheet } from './sheet.js';
+import { renderPricing } from './pricing.js';
+import { renderClientPage, renderPayments, renderFollowup, renderSettings } from './accounts.js';
+import { renderDeliveries } from './delivery.js';
 
 export const state = { user: null, version: '', lookups: null, homeCounts: null };
 export const can = (perm) => !!state.user?.permissions.includes(perm);
@@ -75,15 +78,21 @@ const NAV = [
   { href: '#/', label: 'الرئيسية' },
   { href: '#/sheets', label: 'الورق', badge: () => state.homeCounts?.review },
   { href: '#/sheets/new', label: 'إدخال ورقة', perm: 'sheets.create' },
+  { href: '#/pricing', label: 'التسعير', perm: 'money.view', badge: () => state.homeCounts?.unpriced },
+  { href: '#/deliveries', label: 'التسليم', perm: 'deliveries.manage' },
+  { href: '#/payments', label: 'المدفوعات', perm: 'money.view' },
+  { href: '#/followup', label: 'المتابعة', perm: 'money.view' },
   { href: '#/clients', label: 'العملاء' },
   { href: '#/technicians', label: 'الفنيين' },
   { href: '#/users', label: 'المستخدمين', perm: 'users.manage' },
+  { href: '#/settings', label: 'الإعدادات', perm: 'settings.manage' },
 ];
 
 function shell(content) {
   const hash = location.hash || '#/';
   const nav = NAV.filter((n) => !n.perm || can(n.perm)).map((n) => {
-    const on = n.href === '#/' ? hash === '#/' : hash === n.href || (n.href === '#/sheets' && /^#\/sheets\/\d/.test(hash));
+    const base = hash.split('?')[0];
+    const on = n.href === '#/' ? base === '#/' : base === n.href || (n.href !== '#/sheets/new' && base.startsWith(n.href + '/') && !base.startsWith('#/sheets/new'));
     const b = n.badge?.();
     return h('a', { href: n.href, class: on ? 'on' : '' }, n.label, b ? h('span', { class: 'badge' }, b) : null);
   });
@@ -114,6 +123,12 @@ async function route() {
     else if (hash.startsWith('#/sheets/new')) await renderSheet(main, null);
     else if ((m = hash.match(/^#\/sheets\/(\d+)$/))) await renderSheet(main, Number(m[1]));
     else if (hash === '#/clients') await renderClients(main);
+    else if ((m = hash.match(/^#\/clients\/(\d+)$/)) && can('money.view')) await renderClientPage(main, Number(m[1]));
+    else if ((m = hash.match(/^#\/pricing(?:\/(\d+))?$/)) && can('money.view')) await renderPricing(main, m[1] ? Number(m[1]) : null);
+    else if (hash.split('?')[0] === '#/deliveries' && can('deliveries.manage')) await renderDeliveries(main);
+    else if (hash === '#/payments' && can('money.view')) await renderPayments(main);
+    else if (hash === '#/followup' && can('money.view')) await renderFollowup(main);
+    else if (hash === '#/settings' && can('settings.manage')) await renderSettings(main);
     else if (hash === '#/technicians') await renderTechnicians(main);
     else if (hash === '#/users' && can('users.manage')) await renderUsers(main);
     else main.replaceChildren(h('h1', {}, 'الصفحة مش موجودة'));
@@ -133,12 +148,22 @@ async function renderHome(main) {
         h('b', {}, c.review ?? 0), h('span', {}, 'ورق مستني المراجعة')),
       h('div', { class: 'stat' }, h('b', {}, c.confirmed_today ?? 0), h('span', {}, 'ورق اتأكد النهارده')),
       h('div', { class: 'stat' }, h('b', {}, c.lines_today ?? 0), h('span', {}, 'سطور شغل النهارده')),
+      can('deliveries.manage') ? h('a', { href: '#/deliveries', class: 'stat', style: 'text-decoration:none;color:inherit' },
+        h('b', {}, c.undelivered ?? 0), h('span', {}, 'سطر خلص ولسه ما اتسلمش')) : null,
+      can('money.view') ? [
+        h('a', { href: '#/pricing', class: 'stat' + (c.unpriced ? ' alert' : ''), style: 'text-decoration:none;color:inherit' },
+          h('b', {}, c.unpriced ?? 0), h('span', {}, 'سطر مستني تسعير')),
+        h('a', { href: '#/clients', class: 'stat', style: 'text-decoration:none;color:inherit' },
+          h('b', { class: 'num' }, money(c.outstanding ?? 0)), h('span', {}, 'فلوس برة عند العملاء')),
+        h('a', { href: '#/followup', class: 'stat' + (c.cheques_due ? ' alert' : ''), style: 'text-decoration:none;color:inherit' },
+          h('b', {}, c.cheques_due ?? 0), h('span', {}, 'شيكات مستحقة الأسبوع ده')),
+      ] : null,
       h('div', { class: 'stat' }, h('b', {}, c.clients ?? 0), h('span', {}, 'عميل')),
       h('div', { class: 'stat' }, h('b', {}, c.technicians ?? 0), h('span', {}, 'فني'))),
     can('sheets.create')
       ? h('div', { class: 'actions' }, state.lookups.machines.map((m) =>
         h('a', { class: 'btn', href: `#/sheets/new?machine=${m.id}` }, `+ ورقة ${m.name}`)))
-      : null,
+      : '',
   );
 }
 
@@ -203,16 +228,20 @@ async function renderClients(main) {
     });
     if (ok) { toast('اتحفظ'); await loadLookups(); route(); }
   };
+  const outstanding = showMoney ? clients.filter((c) => c.balance > 0).reduce((s, c) => s + c.balance, 0) : 0;
+  const open = (c) => (showMoney ? go(`#/clients/${c.id}`) : can('clients.edit') && edit(c));
   main.replaceChildren(
-    h('div', { class: 'top' }, h('h1', {}, 'العملاء'),
+    h('div', { class: 'top' }, h('div', {}, h('h1', {}, 'العملاء'),
+      showMoney ? h('div', { class: 'small muted' }, `إجمالي الفلوس برة: ${money(outstanding)}`) : null),
       can('clients.edit') ? h('button', { class: 'btn primary', onclick: () => edit(null) }, '+ عميل جديد') : null),
     clients.length === 0 ? h('div', { class: 'card muted' }, 'لسه مفيش عملاء.') :
       h('div', { class: 'table-wrap' }, h('table', {},
-        h('thead', {}, h('tr', {}, ['الاسم', 'التليفون', showMoney ? 'رصيد أول المدة' : null, 'الحالة'].filter(Boolean).map((t) => h('th', {}, t)))),
-        h('tbody', {}, clients.map((c) => h('tr', { class: can('clients.edit') ? 'click' : '', onclick: () => can('clients.edit') && edit(c) },
+        h('thead', {}, h('tr', {}, ['الاسم', 'التليفون', showMoney ? 'الرصيد' : null, 'الحالة', ''].filter((x) => x !== null).map((t) => h('th', {}, t)))),
+        h('tbody', {}, clients.map((c) => h('tr', { class: showMoney || can('clients.edit') ? 'click' : '', onclick: () => open(c) },
           h('td', {}, c.name), h('td', { class: 'num' }, c.phone || '—'),
-          showMoney ? h('td', { class: 'num' }, money(c.opening_balance)) : null,
-          h('td', {}, c.active ? 'نشط' : h('span', { class: 'muted' }, 'موقوف'))))))),
+          showMoney ? h('td', { class: 'num' + (c.balance > 0 ? ' owe-t' : '') }, `${money(Math.abs(c.balance))} ${c.balance > 0 ? 'عليه' : c.balance < 0 ? 'له' : ''}`) : null,
+          h('td', {}, c.active ? 'نشط' : h('span', { class: 'muted' }, 'موقوف')),
+          h('td', {}, can('clients.edit') ? h('button', { class: 'btn sm', onclick: (e) => { e.stopPropagation(); edit(c); } }, 'تعديل') : null)))))),
   );
 }
 

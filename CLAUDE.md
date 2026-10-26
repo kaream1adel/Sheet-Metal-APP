@@ -48,7 +48,7 @@ Set `SHEETMETAL_DATA` to use another data folder (tests use a temp dir).
 ## Build order (from the design doc)
 
 1. ✅ Core: schema, login/permissions, clients, technicians, machines, manual entry, review/confirm (no OCR).
-2. Pricing, statement PDF, payments + cheques, delivery notes, follow-up.
+2. ✅ Pricing (price memory, bundles), statement/receipt/delivery print pages, payments + cheques, adjustments, promises, follow-up, settings.
 3. Update button + rollback, backups, tunnel + QR, phone layouts.
 4. Printed forms with QR, photo upload, image prep + cell splitting.
 5. OCR v1 + teaching from old sheets.  6. Self-retraining, technician profiles.

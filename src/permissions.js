@@ -7,6 +7,7 @@ export const PERMISSIONS = {
   'sheets.confirm': 'تأكيد الورق',
   'sheets.cancel': 'إلغاء ورقة متأكدة',
   'production.view': 'عرض الإنتاج',
+  'deliveries.manage': 'تسليم الشغل وطباعة إذن التسليم',
   'clients.edit': 'إضافة وتعديل العملاء',
   'technicians.edit': 'إضافة وتعديل الفنيين',
   'machines.edit': 'تعديل المكن والخامات',
@@ -17,7 +18,8 @@ export const PERMISSIONS = {
 
 export const ROLE_PERMISSIONS = {
   admin: Object.keys(PERMISSIONS),
-  staff: ['sheets.create', 'sheets.review', 'sheets.confirm', 'production.view', 'clients.edit', 'technicians.edit'],
+  staff: ['sheets.create', 'sheets.review', 'sheets.confirm', 'production.view', 'deliveries.manage',
+    'clients.edit', 'technicians.edit'],
 };
 
 export const ROLE_NAMES = { admin: 'أدمن', staff: 'مدير الورشة' };

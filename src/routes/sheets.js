@@ -2,6 +2,8 @@
 import { Router } from 'express';
 import { getDb, audit } from '../db.js';
 import { requirePerm, requireUser } from '../auth.js';
+import { can } from '../permissions.js';
+import { allBalances } from '../ledger.js';
 import { httpError, parseDate, cleanText, todayISO } from '../util.js';
 import { normalizeLine, isEmptyLine, validateSheet, summarize, MACHINE_FIELDS, FIELD_LABELS } from '../sheets.js';
 
@@ -183,6 +185,13 @@ sheets.post('/sheets/:id/cancel', requirePerm('sheets.cancel'), (req, res) => {
   if (s.status !== 'confirmed') throw httpError(409, 'بس الورق المتأكد هو اللي يتلغي');
   const reason = cleanText(req.body?.reason, 300);
   if (!reason) throw httpError(400, 'اكتب سبب الإلغاء');
+  const priced = db.prepare(`SELECT 1 FROM lines l WHERE l.sheet_id = ? AND (
+      EXISTS (SELECT 1 FROM line_prices p WHERE p.line_id = l.id AND p.status = 'active')
+      OR EXISTS (SELECT 1 FROM billing_item_lines bl JOIN billing_items b ON b.id = bl.item_id WHERE bl.line_id = l.id AND b.status = 'active'))`).get(s.id);
+  if (priced) throw httpError(409, 'فيه سطور في الورقة دي متسعرة — ألغي التسعير الأول');
+  if (db.prepare('SELECT 1 FROM lines WHERE sheet_id = ? AND delivery_id IS NOT NULL').get(s.id)) {
+    throw httpError(409, 'فيه شغل من الورقة دي اتسلم — ألغي إذن التسليم الأول');
+  }
   db.transaction(() => {
     db.prepare("UPDATE sheets SET status='cancelled', cancelled_by=?, cancelled_at=datetime('now'), cancel_reason=?, updated_at=datetime('now') WHERE id=?")
       .run(req.user.id, reason, s.id);
@@ -203,11 +212,25 @@ sheets.delete('/sheets/:id', requirePerm('sheets.create'), (req, res) => {
   res.json({ ok: true });
 });
 
-// ---------- home counters (no money) ----------
-sheets.get('/home', requireUser, (_req, res) => {
+// ---------- home counters (money parts only for money.view) ----------
+sheets.get('/home', requireUser, (req, res) => {
   const db = getDb();
   const today = todayISO();
+  const extra = {};
+  if (can(req.user, 'money.view')) {
+    extra.unpriced = db.prepare(`SELECT COUNT(*) n FROM lines l JOIN sheets s ON s.id = l.sheet_id WHERE s.status = 'confirmed'
+      AND NOT EXISTS (SELECT 1 FROM line_prices p WHERE p.line_id = l.id AND p.status = 'active')
+      AND NOT EXISTS (SELECT 1 FROM billing_item_lines bl JOIN billing_items b ON b.id = bl.item_id WHERE bl.line_id = l.id AND b.status = 'active')`).get().n;
+    const balances = Object.values(allBalances());
+    extra.outstanding = balances.filter((b) => b > 0).reduce((s, b) => s + b, 0);
+    extra.cheques_due = db.prepare(`SELECT COUNT(*) n FROM payments WHERE is_cheque = 1 AND cheque_status = 'pending' AND cancelled_at IS NULL AND cheque_due <= ?`)
+      .get(todayISO(new Date(Date.now() + 7 * 86400000))).n;
+  }
+  if (can(req.user, 'deliveries.manage')) {
+    extra.undelivered = db.prepare(`SELECT COUNT(*) n FROM lines l JOIN sheets s ON s.id = l.sheet_id WHERE s.status = 'confirmed' AND l.delivery_id IS NULL`).get().n;
+  }
   res.json({
+    ...extra,
     review: db.prepare("SELECT COUNT(*) n FROM sheets WHERE status = 'review'").get().n,
     confirmed_today: db.prepare("SELECT COUNT(*) n FROM sheets WHERE status = 'confirmed' AND date(confirmed_at, 'localtime') = ?").get(today).n,
     lines_today: db.prepare(`SELECT COUNT(*) n FROM lines l JOIN sheets s ON s.id = l.sheet_id

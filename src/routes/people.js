@@ -5,6 +5,7 @@ import { requirePerm, requireUser, hashPassword, checkPasswordRule, publicUser }
 import { PERMISSIONS, ROLE_NAMES, can } from '../permissions.js';
 import { toPiastres, stripMoney, CLIENT_MONEY_FIELDS } from '../money.js';
 import { httpError, cleanText, parseDate } from '../util.js';
+import { balanceOf } from '../ledger.js';
 
 export const people = Router();
 
@@ -78,18 +79,18 @@ people.patch('/users/:id', requirePerm('users.manage'), (req, res) => {
 });
 
 // ---------- clients ----------
-// Balance becomes real in step 2 (pricing + payments); for now it is the opening balance.
-const clientRow = (c) => ({ ...c, active: !!c.active, balance: c.opening_balance });
+// The balance is only calculated for users who may see it.
+const clientRow = (c, user) => ({ ...c, active: !!c.active, ...(can(user, 'money.view') ? { balance: balanceOf(c.id) } : {}) });
 
 people.get('/clients', requireUser, (req, res) => {
-  const rows = getDb().prepare('SELECT * FROM clients ORDER BY active DESC, name').all().map(clientRow);
+  const rows = getDb().prepare('SELECT * FROM clients ORDER BY active DESC, name').all().map((c) => clientRow(c, req.user));
   res.json({ clients: stripMoney(req.user, rows, CLIENT_MONEY_FIELDS) });
 });
 
 people.get('/clients/:id', requireUser, (req, res) => {
   const c = getDb().prepare('SELECT * FROM clients WHERE id = ?').get(req.params.id);
   if (!c) throw httpError(404, 'العميل مش موجود');
-  res.json({ client: stripMoney(req.user, clientRow(c), CLIENT_MONEY_FIELDS) });
+  res.json({ client: stripMoney(req.user, clientRow(c, req.user), CLIENT_MONEY_FIELDS) });
 });
 
 function clientInput(req, current = {}) {
@@ -129,7 +130,7 @@ people.post('/clients', requirePerm('clients.edit'), (req, res) => {
     audit(req.user.id, 'create', 'client', r.lastInsertRowid, undefined, c);
     return r.lastInsertRowid;
   })();
-  const row = clientRow(db.prepare('SELECT * FROM clients WHERE id = ?').get(id));
+  const row = clientRow(db.prepare('SELECT * FROM clients WHERE id = ?').get(id), req.user);
   res.status(201).json({ client: stripMoney(req.user, row, CLIENT_MONEY_FIELDS) });
 });
 
@@ -146,7 +147,7 @@ people.patch('/clients/:id', requirePerm('clients.edit'), (req, res) => {
       .run(c.name, c.phone, c.notes, c.active, c.opening_balance, c.opening_date, cur.id);
     audit(req.user.id, 'update', 'client', cur.id, cur, c);
   })();
-  const row = clientRow(db.prepare('SELECT * FROM clients WHERE id = ?').get(cur.id));
+  const row = clientRow(db.prepare('SELECT * FROM clients WHERE id = ?').get(cur.id), req.user);
   res.json({ client: stripMoney(req.user, row, CLIENT_MONEY_FIELDS) });
 });
 

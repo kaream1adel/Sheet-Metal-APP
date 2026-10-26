@@ -6,6 +6,9 @@ import { loadUser, login, endSession, startSession, publicUser, hashPassword, ch
 import { HttpError, httpError, cleanText } from './util.js';
 import { people } from './routes/people.js';
 import { sheets } from './routes/sheets.js';
+import { money } from './routes/money.js';
+import { deliveries } from './routes/deliveries.js';
+import { print } from './routes/print.js';
 
 export const APP_VERSION = '0.1.0';
 
@@ -69,7 +72,10 @@ export function createApp() {
 
   app.use('/api', people);
   app.use('/api', sheets);
+  app.use('/api', money);
+  app.use('/api', deliveries);
   app.use('/api', (_req, _res, next) => next(httpError(404, 'مش موجود')));
+  app.use(print);
 
   // ---------- the screens ----------
   app.use(express.static(PUBLIC_DIR, { setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));

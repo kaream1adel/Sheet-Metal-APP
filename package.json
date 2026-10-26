@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test test/core.test.js",
+    "test": "node --test test/core.test.js test/money.test.js",
     "create-admin": "node src/cli.js create-admin"
   },
   "engines": {

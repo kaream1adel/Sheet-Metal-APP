@@ -140,4 +140,136 @@ CREATE INDEX idx_audit_entity ON audit_log(entity, entity_id);
 CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT);
 `,
   },
+  {
+    id: 2,
+    name: 'pricing-payments-deliveries',
+    sql: `
+CREATE TABLE settings (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+
+-- A delivery to the client (manager, no money). Lines point at it.
+CREATE TABLE deliveries (
+  id INTEGER PRIMARY KEY,
+  client_id INTEGER NOT NULL REFERENCES clients(id),
+  delivery_date TEXT NOT NULL,
+  receiver TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
+  created_by INTEGER NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  cancelled_by INTEGER REFERENCES users(id),
+  cancelled_at TEXT,
+  cancel_reason TEXT
+);
+ALTER TABLE lines ADD COLUMN delivery_id INTEGER REFERENCES deliveries(id);
+
+-- One "اعتماد التسعير": everything approved together, cancellable together.
+CREATE TABLE pricing_batches (
+  id INTEGER PRIMARY KEY,
+  client_id INTEGER NOT NULL REFERENCES clients(id),
+  due_date TEXT,
+  created_by INTEGER NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  cancelled_by INTEGER REFERENCES users(id),
+  cancelled_at TEXT,
+  cancel_reason TEXT
+);
+
+-- A line priced on its own (a punch line may carry two: hits and louvers).
+CREATE TABLE line_prices (
+  id INTEGER PRIMARY KEY,
+  batch_id INTEGER NOT NULL REFERENCES pricing_batches(id),
+  line_id INTEGER NOT NULL REFERENCES lines(id),
+  unit TEXT NOT NULL,
+  qty REAL NOT NULL,
+  rate INTEGER NOT NULL,      -- piastres per unit
+  amount INTEGER NOT NULL,    -- piastres
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','cancelled'))
+);
+CREATE UNIQUE INDEX idx_line_prices_active ON line_prices(line_id, unit) WHERE status = 'active';
+CREATE INDEX idx_line_prices_batch ON line_prices(batch_id);
+
+-- A grouped item (بند مجمّع): several lines billed as one.
+CREATE TABLE billing_items (
+  id INTEGER PRIMARY KEY,
+  batch_id INTEGER NOT NULL REFERENCES pricing_batches(id),
+  client_id INTEGER NOT NULL REFERENCES clients(id),
+  description TEXT NOT NULL,
+  unit TEXT NOT NULL,
+  qty REAL NOT NULL,
+  rate INTEGER NOT NULL,
+  amount INTEGER NOT NULL,
+  item_date TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','cancelled'))
+);
+CREATE TABLE billing_item_lines (
+  item_id INTEGER NOT NULL REFERENCES billing_items(id),
+  line_id INTEGER NOT NULL REFERENCES lines(id),
+  PRIMARY KEY (item_id, line_id)
+);
+
+-- Last rate used per client + operation + material + thickness (0 = none).
+CREATE TABLE price_memory (
+  client_id INTEGER NOT NULL REFERENCES clients(id),
+  machine_code TEXT NOT NULL,
+  unit TEXT NOT NULL,
+  material_id INTEGER NOT NULL DEFAULT 0,
+  thickness REAL NOT NULL DEFAULT 0,
+  rate INTEGER NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (client_id, machine_code, unit, material_id, thickness)
+);
+CREATE TABLE client_unit_prefs (
+  client_id INTEGER NOT NULL REFERENCES clients(id),
+  machine_code TEXT NOT NULL,
+  unit TEXT NOT NULL,
+  PRIMARY KEY (client_id, machine_code)
+);
+
+-- Discounts (negative) and extra charges (positive).
+CREATE TABLE adjustments (
+  id INTEGER PRIMARY KEY,
+  client_id INTEGER NOT NULL REFERENCES clients(id),
+  adj_date TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  batch_id INTEGER REFERENCES pricing_batches(id),
+  created_by INTEGER NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  cancelled_by INTEGER REFERENCES users(id),
+  cancelled_at TEXT,
+  cancel_reason TEXT
+);
+
+-- A cheque counts against the balance only once cleared.
+CREATE TABLE payments (
+  id INTEGER PRIMARY KEY,
+  client_id INTEGER NOT NULL REFERENCES clients(id),
+  pay_date TEXT NOT NULL,
+  amount INTEGER NOT NULL CHECK (amount > 0),
+  method TEXT NOT NULL,
+  reference TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
+  is_cheque INTEGER NOT NULL DEFAULT 0,
+  cheque_due TEXT,
+  cheque_status TEXT CHECK (cheque_status IN ('pending','cleared','bounced')),
+  cheque_cleared_at TEXT,
+  created_by INTEGER NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  cancelled_by INTEGER REFERENCES users(id),
+  cancelled_at TEXT,
+  cancel_reason TEXT
+);
+CREATE INDEX idx_payments_client ON payments(client_id);
+
+CREATE TABLE promises (
+  id INTEGER PRIMARY KEY,
+  client_id INTEGER NOT NULL REFERENCES clients(id),
+  promised_date TEXT NOT NULL,
+  amount INTEGER NOT NULL DEFAULT 0,
+  notes TEXT NOT NULL DEFAULT '',
+  done_at TEXT,
+  created_by INTEGER NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`,
+  },
 ];
