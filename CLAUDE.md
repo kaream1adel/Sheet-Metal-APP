@@ -42,10 +42,16 @@ public/js/           app.js (shell, router, simple screens), sheet.js (entry + r
                      scan.js (صوّر ورقة + طباعة الورق screens)
 public/js/forms.js   THE paper layouts in mm (shared by print, straightening, row/cell cutting). Never change a
                      shipped layout: add a FORM_VERSION (the QR carries it: "SM1:press:37").
+public/js/ocr.js     القراءة الآلية: empty cells, ~ and //, digits (blob per character, k-nearest-neighbours),
+                     client/material/source as a closed set; learns ONLY from reviewed sheets (ocr_samples,
+                     rebuildable from the photos). Reads fill empty cells only; unsure = yellow issue (server).
+public/js/reader.js  browser glue: model download, photo → pixels, teach from a confirmed/lesson sheet
+src/routes/ocr.js    examples in/out, pending sheets to learn from, accuracy stats (cell_reads)
 public/js/vision.js  photo → straight page: corner squares, QR picks the turn, homography warp, even light,
                      sharpness/light checks. Pure math, also runs in Node (test/vision.test.js).
 test/                core, money, system (backups/update/rollback against a fake GitHub), forms (printing,
-                     photo upload), vision (synthetic tilted/shadowed/blurred photos) — npm test
+                     photo upload), vision (synthetic tilted/shadowed/blurred photos), ocr (synthetic handwriting
+                     learn → read), ocr-api (reads, yellow issues, accuracy, lessons) — npm test
 .github/workflows/   release.yml: tests on every push; on main a Windows package + GitHub release
 scripts/             check-repo.js (no data in the public repo), package.js (builds the release + installer files)
 installer/           sheet-metal.iss: Inno Setup → SheetMetal-Setup.exe (Node + cloudflared bundled, firewall,
@@ -85,4 +91,5 @@ The bundled `node\node.exe` must be the same major version as `NODE_VERSION` in 
 3. ✅ Update button + rollback, backups, tunnel + QR, phone layouts (bottom bar, one-row sheet review).
 4. ✅ Printed forms with QR, photo upload, image prep + cell splitting (photos in data\photos\; the
    sharpness threshold in vision.js still needs tuning on real phone photos).
-5. OCR v1 + teaching from old sheets.  6. Self-retraining, technician profiles.
+5. ✅ OCR v1 (learns from reviewed sheets; "تعليم البرنامج بس" practice sheets; no starter photos existed).
+6. Self-retraining, technician profiles.

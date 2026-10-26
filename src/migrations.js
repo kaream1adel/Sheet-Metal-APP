@@ -295,4 +295,44 @@ CREATE TABLE printed_sheets (
 ALTER TABLE sheets ADD COLUMN photo_meta TEXT;
 `,
   },
+  {
+    id: 4,
+    name: 'ocr',
+    sql: `
+-- What a reviewed sheet teaches the reader: one row per cut-out (a digit, a whole cell,
+-- or "this cell is ~"), as feature bytes. Always rebuildable from the stored photos.
+CREATE TABLE ocr_samples (
+  id INTEGER PRIMARY KEY,
+  sheet_id INTEGER NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+  technician_id INTEGER REFERENCES technicians(id),
+  type TEXT NOT NULL CHECK (type IN ('kind','cell','digit')),
+  field TEXT NOT NULL DEFAULT '',
+  label TEXT NOT NULL,
+  features BLOB NOT NULL,
+  feature_version INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_ocr_samples_sheet ON ocr_samples(sheet_id);
+
+-- What the reader suggested for each cell, and (after confirming) what it really was.
+CREATE TABLE cell_reads (
+  id INTEGER PRIMARY KEY,
+  sheet_id INTEGER NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+  row_no INTEGER NOT NULL,
+  field TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('value','ditto','ink')),
+  value TEXT,
+  confidence REAL NOT NULL DEFAULT 0,
+  candidates TEXT NOT NULL DEFAULT '[]',
+  read_at TEXT NOT NULL DEFAULT (datetime('now')),
+  final_value TEXT,
+  correct INTEGER,
+  finalized_at TEXT,
+  UNIQUE (sheet_id, row_no, field)
+);
+
+-- Cells the reviewer marked "same as above" (~ or //): the reader learns that mark.
+ALTER TABLE lines ADD COLUMN ditto_fields TEXT NOT NULL DEFAULT '[]';
+`,
+  },
 ];

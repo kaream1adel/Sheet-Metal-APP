@@ -5,6 +5,8 @@ import { get, post, put, del } from './api.js';
 import { state, can, go, loadLookups } from './app.js';
 import { formLayout } from './forms.js';
 import { photoToPage, uploadBody, pagePreview } from './scan.js';
+import { pageFromUrl, readPage, teachFrom } from './reader.js';
+import { SURE } from './ocr.js';
 
 const LABELS = {
   pieces: 'عدد القطع', total_written: 'الإجمالي', sheets: 'عدد الألواح', minutes_per_sheet: 'دقائق للوح',
@@ -57,7 +59,7 @@ export async function renderSheet(main, id) {
   const model = sheet ? {
     id: sheet.id, machine_id: sheet.machine_id, technician_id: sheet.technician_id || '', sheet_date: sheet.sheet_date || '',
     sheet_no: sheet.sheet_no || '', notes: sheet.notes || '',
-    lines: sheet.lines.map((l) => ({ ...blankLine(), ...Object.fromEntries(Object.entries(l).map(([k, v]) => [k, k.endsWith('_id') ? v : str(v)])),
+    lines: sheet.lines.map((l) => ({ ...blankLine(), ...Object.fromEntries(Object.entries(l).map(([k, v]) => [k, k.endsWith('_id') || k === 'ditto_fields' ? v : str(v)])),
       client_text: l.client_name || l.client_text || '', material_text: l.material_name || '', material_source: l.material_source || 'client' })),
   } : {
     id: null, machine_id: Number(params.get('machine')) || '', technician_id: '', sheet_date: todayISO(), sheet_no: '', notes: '',
@@ -164,7 +166,12 @@ export async function renderSheet(main, id) {
         const tr = h('tr', { dataset: { i } }, h('td', { class: 'rn' }, h('div', {}, i + 1),
           i > 0 ? h('button', { class: 'btn sm', type: 'button', title: 'زي اللي فوق', onclick: () => copyAbove(i) }, '⤓') : null,
           h('button', { class: 'btn sm danger', type: 'button', title: 'امسح السطر', onclick: () => removeRow(i) }, '×')));
-        for (const c of cols) tr.append(h('td', { 'data-label': c.label, dataset: { field: c.field } }, cellInput(l, i, c)));
+        for (const c of cols) {
+          const td = h('td', { 'data-label': c.label, dataset: { field: c.field } }, cellInput(l, i, c));
+          const read = readAt(i + 1, c.field);
+          if (read) markRead(td, read, l, i, c);
+          tr.append(td);
+        }
         rows.push(tr);
       } else {
         rows.push(h('tr', { dataset: { i } }, h('td', { class: 'rn' }, i + 1), cols.map((c) => h('td', { 'data-label': c.label }, readValue(l, c)))));
@@ -174,6 +181,49 @@ export async function renderSheet(main, id) {
       h('thead', {}, h('tr', {}, h('th', {}, 'م'), cols.map((c) => h('th', {}, c.label)))),
       h('tbody', {}, rows)));
     if (editable) { paintIssues(); drawPager(); }
+  }
+
+  // What the automatic reader said about a cell.
+  function readAt(row, field) { return (sheet?.reads || []).find((r) => r.row_no === row && r.field === field); }
+  function markRead(td, read, l, i, c) {
+    const pct = Math.round(read.confidence * 100);
+    if (read.kind === 'ink') { td.classList.add('ocr-ink'); td.title = 'فيه كتابة هنا البرنامج لسه مش عارف يقراها'; return; }
+    td.classList.add(read.confidence >= SURE ? 'ocr-sure' : 'ocr-read');
+    td.title = read.kind === 'ditto' ? `البرنامج قرا "زي اللي فوق" (متأكد ${pct}%)` : `البرنامج قرا الخانة دي (متأكد ${pct}%)`;
+    // Other likely names as one-tap chips (client / material).
+    if ((c.kind === 'client' || c.kind === 'material') && read.candidates.length > 1) {
+      const list = c.kind === 'client' ? state.lookups.clients : state.lookups.materials;
+      const idKey = c.kind === 'client' ? 'client_id' : 'material_id';
+      const textKey = c.kind === 'client' ? 'client_text' : 'material_text';
+      td.append(h('div', { class: 'chips' }, read.candidates.map((cand) => {
+        const item = list.find((x) => String(x.id) === cand.value);
+        if (!item) return null;
+        return h('button', { class: `chip${String(l[idKey]) === cand.value ? ' on' : ''}`, type: 'button', onclick: () => {
+          l[idKey] = item.id; l[textKey] = item.name; setDitto(l, idKey, false);
+          drawTable(); changed();
+        } }, item.name);
+      })));
+    }
+  }
+
+  // اقرا الورقة: run the reader on the photo; it fills only the empty cells.
+  async function readNow(btn) {
+    btn.disabled = true;
+    btn.textContent = 'جاري القراءة…';
+    try {
+      await saving;
+      await save();
+      const page = await pageFromUrl(sheet.photo.url);
+      const reads = await readPage(page, layout, model.technician_id ? Number(model.technician_id) : null);
+      await post(`/api/sheets/${model.id}/reads`, { reads });
+      const sure = reads.filter((r) => r.value !== null || r.kind === 'ditto').length;
+      toast(sure ? `البرنامج قرا ${sure} خانة — بص على الصفرا` : 'البرنامج لسه بيتعلم: علّم على الخانات اللي فيها كتابة بس');
+      go(`#/sheets/${model.id}`);
+    } catch (ex) {
+      toast(ex.message, true);
+      btn.disabled = false;
+      btn.textContent = 'اقرا الورقة';
+    }
   }
 
   // One printed row cut from the straightened photo (a little above and below the lines).
@@ -278,7 +328,9 @@ export async function renderSheet(main, id) {
       type: 'text', class: c.kind === 'num' ? 'n' : '', value: l[c.key], inputmode: c.kind === 'num' ? 'decimal' : null,
       onfocus: onFocus, onkeydown: keys,
       oninput: (e) => {
-        if (DITTO.test(e.target.value.trim())) { e.target.value = dittoValue(i, c.key); }
+        const ditto = DITTO.test(e.target.value.trim());
+        if (ditto) e.target.value = dittoValue(i, c.key);
+        setDitto(l, c.field, ditto);
         l[c.key] = e.target.value;
         if (c.key === 'pieces' || c.key === 'ops_per_piece') updateTotalHint(i);
         changed();
@@ -338,12 +390,14 @@ export async function renderSheet(main, id) {
         l[idKey] = above[idKey];
         l[textKey] = above[textKey];
         input.value = above[textKey];
+        setDitto(l, idKey, true);
         close();
         changed();
         return;
       }
       l[idKey] = null;
       l[textKey] = input.value;
+      setDitto(l, idKey, false);
       changed();
       open();
     });
@@ -368,6 +422,13 @@ export async function renderSheet(main, id) {
     });
     wrap.append(input);
     return wrap;
+  }
+
+  // Cells written as ~ or // on the paper: kept so the reader learns the mark.
+  function setDitto(l, field, on) {
+    const set = new Set(l.ditto_fields || []);
+    if (on) set.add(field); else set.delete(field);
+    l.ditto_fields = [...set];
   }
 
   const product = (l) => {
@@ -529,8 +590,9 @@ export async function renderSheet(main, id) {
       return;
     }
     try {
-      await post(`/api/sheets/${model.id}/confirm`, { acks: [...acks] });
+      const r = await post(`/api/sheets/${model.id}/confirm`, { acks: [...acks] });
       toast('الورقة اتأكدت ✓');
+      if (layout) await teachFrom(r.sheet).catch((err) => console.warn('teaching failed', err));
       go(`#/sheets/${model.id}`);
     } catch (ex) {
       if (ex.data?.issues) { issues = ex.data.issues; paintIssues(); drawIssues(); }
@@ -571,7 +633,21 @@ export async function renderSheet(main, id) {
           try { await del(`/api/sheets/${model.id}`); toast('اتمسحت'); go('#/sheets'); } catch (ex) { toast(ex.message, true); }
         } }, 'مسح الورقة'));
       }
-      if (layout) btns.push(retakeButton());
+      if (layout) {
+        btns.push(h('button', { class: 'btn', type: 'button', onclick: (e) => readNow(e.target) }, 'اقرا الورقة'));
+        btns.push(retakeButton());
+        btns.push(h('button', { class: 'btn', type: 'button', title: 'ورقة تجربة: البرنامج يتعلم منها ومتتحسبش شغل', onclick: async () => {
+          if (!(await confirmModal('تعليم البرنامج بس', 'الورقة دي هتتحفظ كدرس: البرنامج يتعلم منها، بس مش هتتحسب شغل ولا هتروح للتسعير. اتأكد إن كل اللي في الورقة متكتب صح. نكمل؟', 'احفظها كدرس'))) return;
+          try {
+            await saving;
+            await save();
+            const r = await post(`/api/sheets/${model.id}/lesson`);
+            await teachFrom(r.sheet);
+            toast('البرنامج اتعلم من الورقة ✓');
+            go(`#/sheets/${model.id}`);
+          } catch (ex) { toast(ex.message, true); }
+        } }, 'تعليم البرنامج بس'));
+      }
       btns.push(h('span', { class: 'keys' }, 'Enter = الغلط اللي بعده · Tab = الخانة اللي بعدها · ~ أو // = زي اللي فوق · Ctrl+Enter = تأكيد'));
     } else if (sheet?.status === 'confirmed' && can('sheets.cancel')) {
       btns.push(h('button', { class: 'btn danger', type: 'button', onclick: async () => {

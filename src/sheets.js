@@ -47,6 +47,9 @@ export function normalizeLine(raw, rowNo) {
     notes: cleanText(raw.notes, 300),
   };
   for (const f of NUMERIC) line[f] = parseNumber(raw[f]);
+  // Cells written as ~ or // on the paper (kept so the reader can learn the mark).
+  const ditto = Array.isArray(raw.ditto_fields) ? raw.ditto_fields : [];
+  line.ditto_fields = [...new Set(ditto.filter((f) => f in FIELD_LABELS))];
   return line;
 }
 
@@ -67,6 +70,7 @@ export function validateSheet(sheet, lines, machineCode, today = todayISO()) {
   if (!sheet.technician_id) add('yellow', 0, 'technician_id', 'missing', 'الفني مش متحدد');
   if (!sheet.sheet_date) add('yellow', 0, 'sheet_date', 'missing', 'تاريخ الورقة مش مكتوب');
   if (lines.length === 0) add('red', 0, 'lines', 'empty', 'الورقة مفيهاش ولا سطر');
+  readIssues(sheet.reads, lines, add);
 
   const fields = MACHINE_FIELDS[machineCode] || [];
   for (const l of lines) {
@@ -115,6 +119,29 @@ export function validateSheet(sheet, lines, machineCode, today = todayISO()) {
     }
   }
   return issues;
+}
+
+// The automatic reader's suggestions, while the sheet is in review: a suggestion that is
+// still in the cell and isn't sure is yellow (someone must look at it); writing it
+// couldn't read, left empty, is yellow too. reads: rows of cell_reads.
+export const SURE = 0.9;
+function readIssues(reads, lines, add) {
+  const byRow = new Map(lines.map((l) => [l.row_no, l]));
+  for (const r of reads || []) {
+    const l = byRow.get(r.row_no);
+    const cur = l ? l[r.field] : null;
+    const blank = cur === null || cur === undefined || cur === '' || Number.isNaN(cur);
+    if (r.kind === 'ink') {
+      if (!l) add('yellow', r.row_no, 'client_id', 'unread_row', 'السطر ده فيه كتابة ومتسجلش — اكتبه أو اتأكد إنه شخبطة');
+      else if (blank) add('yellow', r.row_no, r.field, 'unread', `${FIELD_LABELS[r.field]}: فيه كتابة البرنامج مقدرش يقراها — اكتبها`);
+      continue;
+    }
+    if (blank || r.value === null || r.confidence >= SURE) continue;
+    const same = NUMERIC.includes(r.field) ? Number(cur) === Number(r.value) : String(cur) === String(r.value);
+    if (same) {
+      add('yellow', r.row_no, r.field, 'ocr', `${FIELD_LABELS[r.field]}: ${r.kind === 'ditto' ? 'اتقرت "زي اللي فوق"' : 'اتقرت أوتوماتيك'} (متأكد ${Math.round(r.confidence * 100)}%) — بص عليها`);
+    }
+  }
 }
 
 export const summarize = (issues) => ({

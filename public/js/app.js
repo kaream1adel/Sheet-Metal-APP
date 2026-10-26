@@ -6,7 +6,7 @@ import { renderPricing } from './pricing.js';
 import { renderClientPage, renderPayments, renderFollowup, renderSettings } from './accounts.js';
 import { renderDeliveries } from './delivery.js';
 import { renderShare } from './system.js';
-import { renderScan, renderPrintForms } from './scan.js';
+import { renderScan, renderPrintForms, renderReader } from './scan.js';
 
 export const state = { user: null, version: '', lookups: null, homeCounts: null };
 export const can = (perm) => !!state.user?.permissions.includes(perm);
@@ -92,6 +92,7 @@ const NAV = [
   { href: '#/clients', label: 'العملاء' },
   { href: '#/technicians', label: 'الفنيين' },
   { href: '#/users', label: 'المستخدمين', perm: 'users.manage' },
+  { href: '#/ocr', label: 'القراءة الآلية', perm: 'settings.manage' },
   { href: '#/share', label: 'مشاركة', perm: 'settings.manage' },
   { href: '#/settings', label: 'الإعدادات', perm: 'settings.manage' },
 ];
@@ -141,6 +142,7 @@ async function route() {
     else if (hash === '#/share' && can('settings.manage')) await renderShare(main);
     else if (hash === '#/scan' && can('sheets.create')) renderScan(main);
     else if (hash === '#/forms' && can('sheets.create')) await renderPrintForms(main);
+    else if (hash === '#/ocr' && can('settings.manage')) await renderReader(main);
     else if (hash === '#/technicians') await renderTechnicians(main);
     else if (hash === '#/users' && can('users.manage')) await renderUsers(main);
     else main.replaceChildren(h('h1', {}, 'الصفحة مش موجودة'));

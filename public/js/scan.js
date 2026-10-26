@@ -5,6 +5,7 @@ import { get, post } from './api.js';
 import { go, state } from './app.js';
 import { processPhoto } from './vision.js';
 import { formLayout } from './forms.js';
+import { readPage, teachFrom } from './reader.js';
 
 const MAX_SIDE = 2400; // photos are scaled to this before processing
 
@@ -60,7 +61,7 @@ export async function photoToPage(file) {
   return { result, jpeg };
 }
 
-export const uploadBody = (result, jpeg, forced = false) => ({ qr: result.qr.text, image: jpeg, quality: result.quality, forced });
+export const uploadBody = (result, jpeg, forced = false, reads = []) => ({ qr: result.qr.text, image: jpeg, quality: result.quality, forced, reads });
 
 // The straightened page with the table grid drawn over it: shows the cutting lines up.
 export function pagePreview(jpeg, layout) {
@@ -95,11 +96,13 @@ export function renderScan(main) {
     const name = result.qr ? `ورقة ${machineName(result.qr.machine)} رقم ${result.qr.sheetNo}` : 'الورقة';
     const retake = h('button', { class: 'btn', onclick: () => camera.click() }, 'صوّر تاني');
     const upload = async (forced) => {
-      fill(card, h('b', {}, name), h('div', { class: 'muted' }, 'جاري الرفع…'));
+      fill(card, h('b', {}, name), h('div', { class: 'muted' }, 'جاري القراءة والرفع…'));
       try {
-        const { sheet } = await post('/api/sheets/photo', uploadBody(result, jpeg, forced));
+        const reads = await readPage(result.image, result.layout);
+        const { sheet } = await post('/api/sheets/photo', uploadBody(result, jpeg, forced, reads));
         fill(card, h('div', { class: 'row', style: 'justify-content:space-between' },
-          h('b', {}, `${name} اترفعت ✓`),
+          h('b', {}, `${name} اترفعت ✓`, sheet.reads.some((r) => r.value !== null)
+            ? h('span', { class: 'small muted' }, ` — البرنامج قرا ${sheet.reads.filter((r) => r.value !== null).length} خانة`) : null),
           h('a', { class: 'btn primary', href: `#/sheets/${sheet.id}` }, 'راجعها دلوقتي')),
           pagePreview(jpeg, result.layout));
         toast(`${name} اترفعت`);
@@ -175,3 +178,56 @@ export async function renderPrintForms(main) {
           } }, 'الورقة دي باظت أو ضاعت'))))))));
 }
 
+
+// ---------- القراءة الآلية (admin) ----------
+const WHAT = { number: 'الأرقام', client_id: 'العملاء', material_id: 'الخامات', material_source: 'الخامة من', ditto: '~ و //' };
+
+export async function renderReader(main) {
+  const [stats, pending] = await Promise.all([get('/api/ocr/stats'), get('/api/ocr/pending')]);
+  const count = (type, field, label) => stats.samples.filter((s) => s.type === type && (field === undefined || s.field === field) && (label === undefined || s.label === label))
+    .reduce((n, s) => n + s.n, 0);
+  const names = (field) => new Set(stats.samples.filter((s) => s.type === 'cell' && s.field === field).map((s) => s.label)).size;
+  const digits = count('digit');
+  const ditto = count('kind', undefined, 'ditto');
+  const ready = (ok, yes, no) => h('div', { class: `issue ${ok ? 'seen' : 'yellow'}`, style: 'cursor:default' }, ok ? `✓ ${yes}` : no);
+
+  const teachBtn = h('button', { class: 'btn primary', disabled: !pending.ids.length, onclick: async () => {
+    teachBtn.disabled = true;
+    let done = 0;
+    for (const id of pending.ids) {
+      teachBtn.textContent = `جاري التعليم… ${done}/${pending.ids.length}`;
+      try {
+        const { sheet } = await get(`/api/sheets/${id}`);
+        await teachFrom(sheet);
+      } catch (ex) { console.warn('teach', id, ex); }
+      done++;
+    }
+    toast('البرنامج اتعلم من الورق ✓');
+    renderReader(main);
+  } }, pending.ids.length ? `علّم البرنامج من الورق اللي فات (${pending.ids.length})` : 'البرنامج اتعلم من كل الورق المتأكد');
+
+  main.replaceChildren(
+    h('div', { class: 'top' }, h('h1', {}, 'القراءة الآلية')),
+    h('div', { class: 'card grid' },
+      h('div', {}, 'البرنامج بيتعلم يقرا خط الفنيين من كل ورقة بتتصور وتتأكد. كل ما الورق يزيد، القراءة تتحسن. هو بيقترح بس — أي خانة مش متأكد منها بتفضل صفرا لحد ما حد يبص عليها.'),
+      h('div', { class: 'small muted' }, 'عايز تعلّمه أسرع؟ اطبع ورق، خلّي الفنيين يملوه زي العادي، صوّره واكتبه، ودوس "تعليم البرنامج بس" لو الورقة تجربة.'),
+      h('div', { class: 'row' }, teachBtn)),
+    h('div', { class: 'grid stats', style: 'margin-top:12px' },
+      [['ورقة اتعلم منها', stats.sheets], ['ورقة تعليم', stats.lessons], ['رقم مكتوب بخط إيد', digits], ['اسم عميل', names('client_id')], ['علامة ~ أو //', ditto]]
+        .map(([label, n]) => h('div', { class: 'stat' }, h('b', {}, n), h('span', {}, label)))),
+    h('div', { class: 'grid', style: 'margin-top:12px;max-width:720px' },
+      ready(digits >= 20, 'بيقرا الأرقام', `الأرقام: محتاج ${20 - digits} رقم كمان قبل ما يبدأ يقرا`),
+      ready(names('client_id') > 0, `بيعرف ${names('client_id')} عميل من خطهم`, 'العملاء: لسه ما اتعلمش ولا اسم'),
+      ready(names('material_id') > 0, `بيعرف ${names('material_id')} خامة`, 'الخامات: لسه ما اتعلمش'),
+      ready(ditto >= 4, 'بيعرف علامة "زي اللي فوق" من خط الفنيين', 'علامة ~ و //: بيخمّنها من شكلها لحد ما يشوف 4 أمثلة')),
+    h('h2', { style: 'margin-top:20px' }, 'دقة القراءة'),
+    stats.accuracy.length === 0
+      ? h('div', { class: 'card muted' }, 'لسه مفيش ورق اتقرا واتأكد.')
+      : h('div', { class: 'table-wrap' }, h('table', {},
+        h('thead', {}, h('tr', {}, ['الأسبوع', 'إيه', 'اتقرا', 'صح', 'متأكد منه', 'متأكد وطلع غلط'].map((t) => h('th', {}, t)))),
+        h('tbody', {}, stats.accuracy.map((a) => h('tr', {},
+          h('td', { class: 'num' }, a.week), h('td', {}, WHAT[a.what] || a.what), h('td', { class: 'num' }, a.reads),
+          h('td', { class: 'num' }, `${Math.round((a.correct / a.reads) * 100)}%`), h('td', { class: 'num' }, a.sure),
+          h('td', { class: `num${a.sure_wrong ? ' owe-t' : ''}` }, a.sure_wrong)))))),
+    stats.unread ? h('div', { class: 'small muted', style: 'margin-top:8px' }, `${stats.unread} خانة فيها كتابة البرنامج كان لسه مش عارف يقراها (أغلبها قبل ما يتعلم).`) : null);
+}

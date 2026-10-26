@@ -13,6 +13,7 @@ import { normalizeLine, isEmptyLine, validateSheet, summarize, MACHINE_FIELDS, F
 import { dataDir, ensureDir } from '../paths.js';
 import { formLayout, parseQr } from '../../public/js/forms.js';
 import { missingSheets } from './forms.js';
+import { NUMBER_FIELDS, NAME_FIELDS } from '../../public/js/ocr.js';
 
 export const sheets = Router();
 
@@ -20,7 +21,7 @@ const STATUS_NAMES = { review: 'مستنية المراجعة', confirmed: 'ات
 
 const LINE_COLS = ['row_no', 'client_id', 'client_text', 'part_name', 'material_id', 'thickness', 'pieces',
   'ops_per_piece', 'total_written', 'sheets', 'minutes_per_sheet', 'sheet_size', 'pieces_per_sheet',
-  'hits_per_piece', 'louvers_per_piece', 'minutes', 'work_date', 'material_source', 'notes'];
+  'hits_per_piece', 'louvers_per_piece', 'minutes', 'work_date', 'material_source', 'notes', 'ditto_fields'];
 
 function loadSheet(id) {
   const db = getDb();
@@ -37,9 +38,16 @@ function loadSheet(id) {
     SELECT l.*, c.name AS client_name, mt.name AS material_name
     FROM lines l LEFT JOIN clients c ON c.id = l.client_id LEFT JOIN materials mt ON mt.id = l.material_id
     WHERE l.sheet_id = ? ORDER BY l.row_no`).all(id);
+  for (const l of s.lines) l.ditto_fields = parseList(l.ditto_fields);
   s.acks = db.prepare('SELECT issue_key FROM sheet_acks WHERE sheet_id = ?').all(id).map((a) => a.issue_key);
+  s.reads = db.prepare('SELECT row_no, field, kind, value, confidence, candidates FROM cell_reads WHERE sheet_id = ? ORDER BY row_no').all(id)
+    .map((r) => ({ ...r, candidates: parseList(r.candidates) }));
   return s;
 }
+
+const parseList = (v) => {
+  try { const a = JSON.parse(v || '[]'); return Array.isArray(a) ? a : []; } catch { return []; }
+};
 
 function withIssues(s) {
   const issues = s.status === 'review' ? validateSheet(s, s.lines, s.machine_code) : [];
@@ -105,7 +113,8 @@ function writeLines(sheetId, lines) {
   const ins = db.prepare(`INSERT INTO lines (sheet_id, ${LINE_COLS.join(', ')}) VALUES (?, ${LINE_COLS.map(() => '?').join(', ')})`);
   for (const l of lines) {
     // NaN can't be stored; keep the row but as blank so the reviewer re-types it.
-    ins.run(sheetId, ...LINE_COLS.map((c) => (Number.isNaN(l[c]) ? null : l[c] === 'invalid' ? null : l[c])));
+    ins.run(sheetId, ...LINE_COLS.map((c) => (c === 'ditto_fields' ? JSON.stringify(l[c] || [])
+      : Number.isNaN(l[c]) ? null : l[c] === 'invalid' ? null : l[c])));
   }
 }
 
@@ -195,6 +204,107 @@ function savePhoto(machine, sheetNo, buf) {
   return rel;
 }
 
+// ---------- the automatic reader's suggestions (public/js/ocr.js runs in the browser) ----------
+function cleanReads(raw, machine) {
+  if (!Array.isArray(raw)) return [];
+  if (raw.length > 500) throw httpError(400, 'القراءات كتير قوي');
+  const db = getDb();
+  const allowed = new Set(['thickness', 'client_id', 'material_id', 'material_source', ...MACHINE_FIELDS[machine.code]]
+    .filter((f) => NUMBER_FIELDS.includes(f) || NAME_FIELDS.includes(f)));
+  const exists = {
+    client_id: db.prepare('SELECT 1 FROM clients WHERE id = ?'),
+    material_id: db.prepare('SELECT 1 FROM materials WHERE id = ?'),
+  };
+  const valueOk = (field, v) => {
+    if (NUMBER_FIELDS.includes(field)) return /^\d+(\.\d+)?$/.test(v);
+    if (field === 'material_source') return v === 'client' || v === 'factory';
+    return /^\d+$/.test(v) && !!exists[field].get(Number(v));
+  };
+  const seen = new Set();
+  const out = [];
+  for (const r of raw) {
+    const row = Number(r?.row);
+    const field = String(r?.field || '');
+    const kind = ['value', 'ditto', 'ink'].includes(r?.kind) ? r.kind : null;
+    if (!Number.isInteger(row) || row < 1 || row > 60 || !allowed.has(field) || !kind || seen.has(`${row}:${field}`)) continue;
+    seen.add(`${row}:${field}`);
+    let value = kind === 'value' && r.value !== null && r.value !== undefined ? cleanText(String(r.value), 40) : null;
+    if (value !== null && !valueOk(field, value)) value = null;
+    const confidence = Math.max(0, Math.min(1, Number(r.confidence) || 0));
+    const candidates = (Array.isArray(r.candidates) ? r.candidates : []).slice(0, 3)
+      .map((c) => ({ value: cleanText(String(c?.value ?? ''), 40), score: Math.max(0, Math.min(1, Number(c?.score) || 0)) }))
+      .filter((c) => valueOk(field, c.value));
+    out.push({ row_no: row, field, kind: kind === 'value' && value === null ? 'ink' : kind, value, confidence: kind === 'value' && value === null ? 0 : confidence, candidates });
+  }
+  return out.sort((a, b) => a.row_no - b.row_no);
+}
+
+// Puts the reads into empty cells (never over what a person typed) and keeps them for
+// the yellow "look at this" issues and the accuracy numbers.
+function applyReads(sheetId, rawReads, userId) {
+  const db = getDb();
+  const cur = loadSheet(sheetId);
+  const machine = db.prepare('SELECT * FROM machines WHERE id = ?').get(cur.machine_id);
+  const reads = cleanReads(rawReads, machine);
+  const lines = new Map(cur.lines.map((l) => [l.row_no, { ...pickLine(l), ditto_fields: [...l.ditto_fields] }]));
+  const blank = (v) => v === null || v === undefined || v === '';
+  for (const r of reads) {
+    const l = lines.get(r.row_no) || { row_no: r.row_no, ditto_fields: [] };
+    if (r.kind === 'ditto') {
+      // Rows are in order, so the row above already has its own reads.
+      const above = lines.get(r.row_no - 1)?.[r.field];
+      r.value = blank(above) ? null : String(above);
+      if (blank(l[r.field]) && r.value !== null) {
+        l[r.field] = r.value;
+        if (!l.ditto_fields.includes(r.field)) l.ditto_fields.push(r.field);
+      }
+    } else if (r.kind === 'value' && blank(l[r.field])) {
+      l[r.field] = r.value;
+    }
+    if (r.kind !== 'ink' || lines.has(r.row_no)) lines.set(r.row_no, l);
+  }
+  const { lines: clean } = readInput({ lines: [...lines.values()] }, machine, { paperRows: true });
+  db.transaction(() => {
+    // A cell read again gets the new read; cells not in this reading keep theirs.
+    const ins = db.prepare(`INSERT INTO cell_reads (sheet_id, row_no, field, kind, value, confidence, candidates) VALUES (?,?,?,?,?,?,?)
+      ON CONFLICT (sheet_id, row_no, field) DO UPDATE SET kind = excluded.kind, value = excluded.value,
+        confidence = excluded.confidence, candidates = excluded.candidates, read_at = datetime('now')`);
+    for (const r of reads) ins.run(sheetId, r.row_no, r.field, r.kind, r.value, r.confidence, JSON.stringify(r.candidates));
+    writeLines(sheetId, clean);
+    db.prepare("UPDATE sheets SET updated_at = datetime('now') WHERE id = ?").run(sheetId);
+    audit(userId, 'read', 'sheet', sheetId, { lines: cur.lines.map(pickLine) },
+      { reads: reads.length, sure: reads.filter((r) => r.confidence >= 0.9).length, lines: clean.map(pickLine) });
+  })();
+}
+
+sheets.post('/sheets/:id/reads', requirePerm('sheets.review'), (req, res) => {
+  const cur = loadSheet(req.params.id);
+  if (cur.status !== 'review') throw httpError(409, 'الورقة دي مش مستنية مراجعة');
+  if (!cur.photo_path) throw httpError(409, 'الورقة دي مالهاش صورة');
+  applyReads(cur.id, req.body?.reads, req.user.id);
+  res.json({ sheet: withIssues(loadSheet(cur.id)) });
+});
+
+export const LESSON = 'درس لتعليم البرنامج';
+
+// تعليم البرنامج: a practice sheet that only teaches the reader — kept, but cancelled, so it
+// never counts as work, and its printed number stops being "missing".
+sheets.post('/sheets/:id/lesson', requirePerm('sheets.review'), (req, res) => {
+  const db = getDb();
+  const cur = loadSheet(req.params.id);
+  if (cur.status !== 'review') throw httpError(409, 'الورقة دي مش مستنية مراجعة');
+  if (!cur.photo_path) throw httpError(409, 'الورقة دي مالهاش صورة');
+  if (!cur.lines.length) throw httpError(400, 'اكتب اللي في الورقة الأول، عشان البرنامج يتعلم منه');
+  db.transaction(() => {
+    db.prepare("UPDATE sheets SET status = 'cancelled', cancelled_by = ?, cancelled_at = datetime('now'), cancel_reason = ?, updated_at = datetime('now') WHERE id = ?")
+      .run(req.user.id, LESSON, cur.id);
+    db.prepare("UPDATE printed_sheets SET voided_at = datetime('now'), voided_by = ?, void_reason = ? WHERE machine_id = ? AND sheet_no = ? AND voided_at IS NULL")
+      .run(req.user.id, LESSON, cur.machine_id, Number(cur.sheet_no) || -1);
+    audit(req.user.id, 'lesson', 'sheet', cur.id, { status: 'review' }, { status: 'cancelled', reason: LESSON });
+  })();
+  res.json({ sheet: withIssues(loadSheet(cur.id)) });
+});
+
 sheets.post('/sheets/photo', requirePerm('sheets.create'), (req, res) => {
   const db = getDb();
   const { qr, machine, buf, meta } = readPhoto(req.body);
@@ -207,6 +317,10 @@ sheets.post('/sheets/photo', requirePerm('sheets.create'), (req, res) => {
     audit(req.user.id, 'create', 'sheet', r.lastInsertRowid, undefined, { source: 'photo', machine: machine.code, sheet_no: qr.sheetNo, photo, quality: meta.quality, forced: meta.forced });
     return r.lastInsertRowid;
   })();
+  if (Array.isArray(req.body?.reads) && req.body.reads.length) {
+    // Reads are only suggestions: if they can't be used, the photo still counts.
+    try { applyReads(id, req.body.reads, req.user.id); } catch (err) { console.error('reads not applied:', err.message); }
+  }
   res.status(201).json({ sheet: withIssues(loadSheet(id)) });
 });
 
@@ -280,10 +394,23 @@ sheets.post('/sheets/:id/confirm', requirePerm('sheets.confirm'), (req, res) => 
     for (const i of s.issues) ack.run(s.id, i.key, req.user.id);
     db.prepare("UPDATE sheets SET status='confirmed', confirmed_by=?, confirmed_at=datetime('now'), updated_at=datetime('now') WHERE id=?")
       .run(req.user.id, s.id);
+    finalizeReads(s);
     audit(req.user.id, 'confirm', 'sheet', s.id, undefined, { warnings_seen: s.issues.map((i) => i.key) });
   })();
   res.json({ sheet: withIssues(loadSheet(s.id)) });
 });
+
+// What each read turned out to be: the reader's accuracy over time.
+function finalizeReads(s) {
+  const up = getDb().prepare("UPDATE cell_reads SET final_value = ?, correct = ?, finalized_at = datetime('now') WHERE sheet_id = ? AND row_no = ? AND field = ?");
+  for (const r of s.reads) {
+    const l = s.lines.find((x) => x.row_no === r.row_no);
+    const v = l ? l[r.field] : null;
+    const final = v === null || v === undefined || v === '' ? null : String(v);
+    const same = r.value !== null && final !== null && (NUMBER_FIELDS.includes(r.field) ? Number(r.value) === Number(final) : r.value === final);
+    up.run(final, r.kind === 'ink' ? null : same ? 1 : 0, s.id, r.row_no, r.field);
+  }
+}
 
 // ---------- cancel a confirmed sheet (kept, never deleted) ----------
 sheets.post('/sheets/:id/cancel', requirePerm('sheets.cancel'), (req, res) => {
