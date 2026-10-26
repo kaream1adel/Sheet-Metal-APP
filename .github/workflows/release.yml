@@ -1,6 +1,7 @@
-# Every push: tests, then (only if green) the Windows package + SheetMetal-Setup.exe,
-# downloadable from the run's "Artifacts". On main they are also published as a
-# GitHub release, which the app's تحديث button downloads. Pull requests run the tests only.
+# Every push: tests, then (only if green) the Windows package + SheetMetal-Setup.exe.
+# On main they are published as a GitHub release, which the app's تحديث button downloads.
+# Other branches publish a pre-release (test-build-N) so the Setup file is one click away
+# on the Releases page; the app ignores pre-releases. Pull requests run the tests only.
 name: test and release
 
 on:
@@ -73,3 +74,13 @@ jobs:
         run: |
           gh release create "build-${{ github.run_number }}" dist/SheetMetal-Setup.exe dist/sheet-metal-win-x64.tar.gz dist/manifest.json \
             --title "Build ${{ github.run_number }}" --notes-file dist/notes.txt --latest
+      - name: Publish a test pre-release (not main)
+        if: github.event_name == 'push' && github.ref != 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "test-build-${{ github.run_number }}" dist/SheetMetal-Setup.exe \
+            --target "${{ github.sha }}" --prerelease \
+            --title "تجربة ${{ github.run_number }} (${{ github.ref_name }})" \
+            --notes "نسخة تجربة من ${{ github.ref_name }} — نزّل SheetMetal-Setup.exe وشغّله."
