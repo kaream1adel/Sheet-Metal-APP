@@ -272,4 +272,27 @@ CREATE TABLE promises (
 );
 `,
   },
+  {
+    id: 3,
+    name: 'printed-forms-photos',
+    sql: `
+-- Every printed form number, so the same sheet can't be entered twice and a
+-- printed sheet that never came back is noticed. Spoiled papers are voided, not deleted.
+CREATE TABLE printed_sheets (
+  id INTEGER PRIMARY KEY,
+  machine_id INTEGER NOT NULL REFERENCES machines(id),
+  sheet_no INTEGER NOT NULL,
+  form_version INTEGER NOT NULL,
+  printed_at TEXT NOT NULL DEFAULT (datetime('now')),
+  printed_by INTEGER REFERENCES users(id),
+  voided_at TEXT,
+  voided_by INTEGER REFERENCES users(id),
+  void_reason TEXT,
+  UNIQUE (machine_id, sheet_no)
+);
+
+-- Photo of the straightened page: { form_version, width, height, quality, uploaded_at }.
+ALTER TABLE sheets ADD COLUMN photo_meta TEXT;
+`,
+  },
 ];

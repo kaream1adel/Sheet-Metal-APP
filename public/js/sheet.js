@@ -3,6 +3,8 @@
 import { h, toast, fmtDate, fmtNum, todayISO, fold, asciiDigits, formModal, confirmModal, fill } from './ui.js';
 import { get, post, put, del } from './api.js';
 import { state, can, go, loadLookups } from './app.js';
+import { formLayout } from './forms.js';
+import { photoToPage, uploadBody, pagePreview } from './scan.js';
 
 const LABELS = {
   pieces: 'عدد القطع', total_written: 'الإجمالي', sheets: 'عدد الألواح', minutes_per_sheet: 'دقائق للوح',
@@ -62,7 +64,15 @@ export async function renderSheet(main, id) {
     lines: [],
   };
   const editable = sheet ? sheet.status === 'review' && can('sheets.review') : can('sheets.create');
-  if (editable) {
+  // A photo sheet keeps every line on its printed row, under its strip of the photo.
+  const layout = sheet?.photo ? formLayout(sheet.machine_code, sheet.photo.form_version) : null;
+  if (layout) {
+    const byRow = [];
+    for (const l of model.lines) byRow[Number(sheet.lines.find((x) => x.id === l.id)?.row_no || byRow.length + 1) - 1] = l;
+    const n = Math.max(layout.table.rows, byRow.length);
+    model.lines = Array.from({ length: n }, (_, i) => byRow[i] || blankLine());
+  }
+  if (editable && !layout) {
     const target = Math.max(6, model.lines.length + 2);
     while (model.lines.length < target) model.lines.push(blankLine());
   }
@@ -124,6 +134,7 @@ export async function renderSheet(main, id) {
     const m = machine();
     if (!m) { tableBox.replaceChildren(h('div', { class: 'card muted' }, 'اختار المكنة الأول.')); return; }
     const cols = columnsFor(m.code);
+    if (layout) { drawPhotoTable(cols); return; }
     if (!editable) {
       tableBox.replaceChildren(h('table', { class: 'lines' },
         h('thead', {}, h('tr', {}, h('th', {}, 'م'), cols.map((c) => h('th', {}, c.label)))),
@@ -136,6 +147,64 @@ export async function renderSheet(main, id) {
       h('tbody', {}, model.lines.map((l, i) => lineRow(l, i, cols)))));
     paintIssues();
     drawPager();
+  }
+
+  // Photo sheet: columns sized like the paper's, so each input sits under its own
+  // handwriting in the strip of the photo above it.
+  function drawPhotoTable(cols) {
+    const t = layout.table;
+    const pct = (w) => `${(w / t.width) * 100}%`;
+    const paper = layout.columns.slice(1); // [0] is the row number
+    const colgroup = h('colgroup', {}, h('col', { style: `width:${pct(layout.columns[0].w)}` }),
+      cols.map((c) => h('col', { style: `width:${pct(paper.find((p) => p.field === c.field)?.w || 15)}` })));
+    const rows = [];
+    model.lines.forEach((l, i) => {
+      if (i < t.rows) rows.push(stripRow(i, cols.length + 1));
+      if (editable) {
+        const tr = h('tr', { dataset: { i } }, h('td', { class: 'rn' }, h('div', {}, i + 1),
+          i > 0 ? h('button', { class: 'btn sm', type: 'button', title: 'زي اللي فوق', onclick: () => copyAbove(i) }, '⤓') : null,
+          h('button', { class: 'btn sm danger', type: 'button', title: 'امسح السطر', onclick: () => removeRow(i) }, '×')));
+        for (const c of cols) tr.append(h('td', { 'data-label': c.label, dataset: { field: c.field } }, cellInput(l, i, c)));
+        rows.push(tr);
+      } else {
+        rows.push(h('tr', { dataset: { i } }, h('td', { class: 'rn' }, i + 1), cols.map((c) => h('td', { 'data-label': c.label }, readValue(l, c)))));
+      }
+    });
+    tableBox.replaceChildren(h('table', { class: 'lines photo' }, colgroup,
+      h('thead', {}, h('tr', {}, h('th', {}, 'م'), cols.map((c) => h('th', {}, c.label)))),
+      h('tbody', {}, rows)));
+    if (editable) { paintIssues(); drawPager(); }
+  }
+
+  // One printed row cut from the straightened photo (a little above and below the lines).
+  function stripRow(i, span) {
+    const t = layout.table;
+    const pad = 1.5;
+    const y = t.bodyY + i * t.rowH - pad;
+    const hgt = t.rowH + 2 * pad;
+    const img = h('img', { src: sheet.photo.url, alt: '', loading: 'lazy', draggable: 'false',
+      style: `width:${(layout.width / t.width) * 100}%;right:auto;left:${(-t.x / t.width) * 100}%;top:${(-y / hgt) * 100}%` });
+    return h('tr', { class: 'strip', dataset: { i } },
+      h('td', { colspan: span, class: 'strip-cell' }, h('div', { class: 'strip-box', style: `aspect-ratio:${t.width} / ${hgt}`,
+        title: 'دوس عشان تشوف الورقة كاملة', onclick: () => showPage(i) }, img)));
+  }
+
+  // The whole page, with the chosen row outlined. Click the page to zoom in and out.
+  function showPage(row) {
+    const box = pagePreview(sheet.photo.url, layout);
+    if (row !== undefined && row < layout.table.rows) {
+      const r = { y: layout.table.bodyY + row * layout.table.rowH, h: layout.table.rowH };
+      box.querySelector('svg').insertAdjacentHTML('beforeend',
+        `<rect x="${layout.table.x}" y="${r.y}" width="${layout.table.width}" height="${r.h}" fill="#ffd400" fill-opacity=".18" stroke="#e0a000" stroke-width="0.8"/>`);
+    }
+    box.classList.add('zoomable');
+    box.addEventListener('click', () => box.classList.toggle('zoomed'));
+    const back = h('div', { class: 'modal-back', onclick: (e) => { if (e.target === back) back.remove(); } },
+      h('div', { class: 'modal page-modal' },
+        h('div', { class: 'row', style: 'justify-content:space-between;margin-bottom:8px' },
+          h('b', {}, title), h('button', { class: 'btn', onclick: () => back.remove() }, 'قفل')),
+        box));
+    document.body.append(back);
   }
 
   // Rows that still need a look: a red issue or a yellow one not yet seen.
@@ -319,7 +388,8 @@ export async function renderSheet(main, id) {
     changed();
   }
   function removeRow(i) {
-    model.lines.splice(i, 1);
+    if (layout && i < layout.table.rows) model.lines[i] = blankLine();
+    else model.lines.splice(i, 1);
     if (model.lines.length < 3) model.lines.push(blankLine());
     drawTable();
     changed();
@@ -329,6 +399,7 @@ export async function renderSheet(main, id) {
   // Server rows are numbered over non-empty lines only; map them back to table rows.
   function rowIndexMap() {
     const map = [];
+    if (layout) { model.lines.forEach((l, i) => { map[i] = i; }); return map; } // photo: row n is line n
     model.lines.forEach((l, i) => { if (!isEmpty(l)) map.push(i); });
     return map;
   }
@@ -336,7 +407,7 @@ export async function renderSheet(main, id) {
     if (issue.row === 0) return main.querySelector(`[data-field="${issue.field}"][data-row="0"]`);
     const idx = rowIndexMap()[issue.row - 1];
     if (idx === undefined) return null;
-    return tableBox.querySelector(`tr[data-i="${idx}"] td[data-field="${issue.field}"]`);
+    return tableBox.querySelector(`tr[data-i="${idx}"]:not(.strip) td[data-field="${issue.field}"]`);
   }
   function paintIssues() {
     tableBox.querySelectorAll('td.is-red, td.is-yellow').forEach((td) => td.classList.remove('is-red', 'is-yellow', 'seen'));
@@ -406,8 +477,9 @@ export async function renderSheet(main, id) {
     return {
       machine_id: model.machine_id, technician_id: model.technician_id || null, sheet_date: model.sheet_date || null,
       sheet_no: model.sheet_no || null, notes: model.notes,
-      lines: model.lines.filter((l) => !isEmpty(l)).map((l) => {
+      lines: model.lines.map((l, i) => ({ ...l, row_no: i + 1 })).filter((l) => !isEmpty(l)).map((l) => {
         const o = { ...l };
+        if (!layout) delete o.row_no;
         for (const k of TEXT_FIELDS) o[k] = String(o[k] || '');
         delete o.material_text;
         return o;
@@ -466,6 +538,27 @@ export async function renderSheet(main, id) {
     }
   }
 
+  // صوّر تاني: a better photo of the same paper; what was typed stays.
+  function retakeButton() {
+    const input = h('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true, onchange: async () => {
+      const file = input.files[0];
+      input.value = '';
+      if (!file) return;
+      toast('جاري تجهيز الصورة…');
+      try {
+        await saving;
+        await save();
+        const { result, jpeg } = await photoToPage(file);
+        if (!jpeg) { toast(result.problems[0], true); return; }
+        if (!result.ok && !(await confirmModal('الصورة فيها مشكلة', `${result.problems.join(' ')} ترفعها برضه؟`, 'ارفعها'))) return;
+        await post(`/api/sheets/${model.id}/photo`, uploadBody(result, jpeg, !result.ok));
+        toast('الصورة اتغيرت ✓');
+        go(`#/sheets/${model.id}`);
+      } catch (ex) { toast(ex.message, true); }
+    } });
+    return h('span', {}, input, h('button', { class: 'btn', type: 'button', onclick: () => input.click() }, 'صوّر تاني'));
+  }
+
   function drawActions() {
     const btns = [];
     if (editable) {
@@ -478,6 +571,7 @@ export async function renderSheet(main, id) {
           try { await del(`/api/sheets/${model.id}`); toast('اتمسحت'); go('#/sheets'); } catch (ex) { toast(ex.message, true); }
         } }, 'مسح الورقة'));
       }
+      if (layout) btns.push(retakeButton());
       btns.push(h('span', { class: 'keys' }, 'Enter = الغلط اللي بعده · Tab = الخانة اللي بعدها · ~ أو // = زي اللي فوق · Ctrl+Enter = تأكيد'));
     } else if (sheet?.status === 'confirmed' && can('sheets.cancel')) {
       btns.push(h('button', { class: 'btn danger', type: 'button', onclick: async () => {
@@ -489,6 +583,7 @@ export async function renderSheet(main, id) {
         if (ok) { toast('الورقة اتلغت'); go(`#/sheets/${model.id}`); }
       } }, 'إلغاء الورقة'));
     }
+    if (layout) btns.push(h('button', { class: 'btn', type: 'button', onclick: () => showPage() }, 'الورقة كاملة'));
     btns.push(h('a', { class: 'btn', href: '#/sheets' }, 'رجوع للورق'));
     actionsBox.replaceChildren(...btns);
   }

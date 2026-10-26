@@ -1,5 +1,7 @@
-// Sheets: manual entry, editing while in review, confirming and cancelling.
+// Sheets: manual entry, photos of printed forms, editing while in review, confirming and cancelling.
 import { Router } from 'express';
+import fs from 'fs';
+import { join, resolve, sep } from 'path';
 import { getDb, audit } from '../db.js';
 import { requirePerm, requireUser } from '../auth.js';
 import { can } from '../permissions.js';
@@ -8,6 +10,9 @@ import { backupStatus } from '../backup.js';
 import { updateStatus } from '../update.js';
 import { httpError, parseDate, cleanText, todayISO } from '../util.js';
 import { normalizeLine, isEmptyLine, validateSheet, summarize, MACHINE_FIELDS, FIELD_LABELS } from '../sheets.js';
+import { dataDir, ensureDir } from '../paths.js';
+import { formLayout, parseQr } from '../../public/js/forms.js';
+import { missingSheets } from './forms.js';
 
 export const sheets = Router();
 
@@ -38,11 +43,20 @@ function loadSheet(id) {
 
 function withIssues(s) {
   const issues = s.status === 'review' ? validateSheet(s, s.lines, s.machine_code) : [];
-  return { ...s, status_name: STATUS_NAMES[s.status], fields: MACHINE_FIELDS[s.machine_code], issues, counts: summarize(issues) };
+  let photo = null;
+  if (s.photo_path) {
+    let meta = {};
+    try { meta = JSON.parse(s.photo_meta || '{}'); } catch { /* keep {} */ }
+    // The file name changes with every new photo, so the URL does too (no stale cache).
+    photo = { url: `/api/sheets/${s.id}/photo?f=${encodeURIComponent(s.photo_path.split('/').pop())}`, form_version: meta.form_version || 1, quality: meta.quality, forced: !!meta.forced };
+  }
+  return { ...s, status_name: STATUS_NAMES[s.status], fields: MACHINE_FIELDS[s.machine_code], issues, counts: summarize(issues), photo };
 }
 
 // Header + lines from a request body, checked against the database.
-function readInput(body, machine) {
+// paperRows: a photo sheet keeps each line on its printed row (so it stays under its
+// strip of the photo); a typed sheet is renumbered 1..n.
+function readInput(body, machine, { paperRows = false } = {}) {
   const db = getDb();
   const sheet_date = body.sheet_date ? parseDate(body.sheet_date) : null;
   if (sheet_date === undefined) throw httpError(400, 'تاريخ الورقة غلط');
@@ -52,8 +66,19 @@ function readInput(body, machine) {
   }
   const raw = Array.isArray(body.lines) ? body.lines : [];
   if (raw.length > 60) throw httpError(400, 'السطور كتير قوي في ورقة واحدة');
-  const lines = raw.map((r, i) => normalizeLine(r || {}, i + 1)).filter((l) => !isEmptyLine(l));
-  lines.forEach((l, i) => { l.row_no = i + 1; });
+  let lines;
+  if (paperRows) {
+    lines = raw.map((r, i) => normalizeLine(r || {}, Number(r?.row_no) || i + 1)).filter((l) => !isEmptyLine(l));
+    const seen = new Set();
+    for (const l of lines) {
+      if (!Number.isInteger(l.row_no) || l.row_no < 1 || l.row_no > 60 || seen.has(l.row_no)) throw httpError(400, 'أرقام السطور متلخبطة');
+      seen.add(l.row_no);
+    }
+    lines.sort((a, b) => a.row_no - b.row_no);
+  } else {
+    lines = raw.map((r, i) => normalizeLine(r || {}, i + 1)).filter((l) => !isEmptyLine(l));
+    lines.forEach((l, i) => { l.row_no = i + 1; });
+  }
   const clientOk = db.prepare('SELECT 1 FROM clients WHERE id = ?');
   const matOk = db.prepare('SELECT 1 FROM materials WHERE id = ?');
   for (const l of lines) {
@@ -137,13 +162,93 @@ sheets.post('/sheets', requirePerm('sheets.create'), (req, res) => {
   res.status(201).json({ sheet: withIssues(loadSheet(id)) });
 });
 
+// ---------- photos of printed forms ----------
+// The browser straightens the photo (public/js/vision.js) and sends the page image
+// plus what its QR code says. Body: { qr, image: "data:image/jpeg;base64,...", quality, forced }.
+const MAX_PHOTO = 8 * 1024 * 1024;
+
+function readPhoto(body) {
+  const qr = parseQr(body?.qr);
+  if (!qr) throw httpError(400, 'الكود اللي على الورقة مش مفهوم');
+  const layout = formLayout(qr.machine, qr.version);
+  if (!layout) throw httpError(400, 'نموذج الورقة دي مش معروف — حدّث البرنامج');
+  const m = /^data:image\/jpeg;base64,([A-Za-z0-9+/=]+)$/.exec(String(body?.image || ''));
+  const buf = m ? Buffer.from(m[1], 'base64') : null;
+  if (!buf || buf.length < 1000 || buf[0] !== 0xff || buf[1] !== 0xd8) throw httpError(400, 'الصورة مش واصلة سليمة. جرب تاني.');
+  if (buf.length > MAX_PHOTO) throw httpError(413, 'الصورة كبيرة قوي');
+  const machine = getDb().prepare('SELECT * FROM machines WHERE code = ? AND active = 1').get(qr.machine);
+  if (!machine) throw httpError(400, 'المكنة دي مش موجودة في البرنامج');
+  const q = body?.quality || {};
+  const meta = {
+    form_version: qr.version,
+    quality: { sharpness: Number(q.sharpness) || 0, brightness: Number(q.brightness) || 0, coverage: Number(q.coverage) || 0 },
+    forced: !!body?.forced, // uploaded although the quality check complained
+    uploaded_at: new Date().toISOString(),
+  };
+  return { qr, machine, buf, meta };
+}
+
+function savePhoto(machine, sheetNo, buf) {
+  const rel = `photos/${machine.code}/${sheetNo}_${Date.now()}.jpg`;
+  ensureDir(join(dataDir(), 'photos', machine.code));
+  fs.writeFileSync(join(dataDir(), rel), buf);
+  return rel;
+}
+
+sheets.post('/sheets/photo', requirePerm('sheets.create'), (req, res) => {
+  const db = getDb();
+  const { qr, machine, buf, meta } = readPhoto(req.body);
+  const dup = db.prepare("SELECT id FROM sheets WHERE machine_id = ? AND sheet_no = ? AND status <> 'cancelled'").get(machine.id, String(qr.sheetNo));
+  if (dup) throw httpError(409, `ورقة ${machine.name} رقم ${qr.sheetNo} اترفعت قبل كده`, { existing_id: dup.id });
+  const photo = savePhoto(machine, qr.sheetNo, buf);
+  const id = db.transaction(() => {
+    const r = db.prepare("INSERT INTO sheets (machine_id, sheet_no, source, photo_path, photo_meta, created_by) VALUES (?,?,'photo',?,?,?)")
+      .run(machine.id, String(qr.sheetNo), photo, JSON.stringify(meta), req.user.id);
+    audit(req.user.id, 'create', 'sheet', r.lastInsertRowid, undefined, { source: 'photo', machine: machine.code, sheet_no: qr.sheetNo, photo, quality: meta.quality, forced: meta.forced });
+    return r.lastInsertRowid;
+  })();
+  res.status(201).json({ sheet: withIssues(loadSheet(id)) });
+});
+
+// صوّر تاني: a new photo of the same paper while the sheet is still in review.
+sheets.post('/sheets/:id/photo', requirePerm('sheets.review'), (req, res) => {
+  const db = getDb();
+  const cur = loadSheet(req.params.id);
+  if (cur.status !== 'review') throw httpError(409, 'الورقة دي اتأكدت — مينفعش تتغير صورتها');
+  const { qr, machine, buf, meta } = readPhoto(req.body);
+  if (machine.id !== cur.machine_id || (cur.sheet_no && cur.sheet_no !== String(qr.sheetNo))) {
+    throw httpError(409, `دي صورة ورقة ${machine.name} رقم ${qr.sheetNo}، مش الورقة دي`);
+  }
+  if (!cur.sheet_no && db.prepare("SELECT 1 FROM sheets WHERE machine_id = ? AND sheet_no = ? AND status <> 'cancelled' AND id <> ?").get(machine.id, String(qr.sheetNo), cur.id)) {
+    throw httpError(409, `ورقة ${machine.name} رقم ${qr.sheetNo} اترفعت قبل كده`);
+  }
+  const photo = savePhoto(machine, qr.sheetNo, buf);
+  db.transaction(() => {
+    // The old file stays on disk: nothing is ever silently thrown away.
+    db.prepare("UPDATE sheets SET photo_path = ?, photo_meta = ?, sheet_no = ?, source = 'photo', updated_at = datetime('now') WHERE id = ?")
+      .run(photo, JSON.stringify(meta), String(qr.sheetNo), cur.id);
+    audit(req.user.id, 'photo', 'sheet', cur.id, { photo: cur.photo_path }, { photo, quality: meta.quality, forced: meta.forced });
+  })();
+  res.json({ sheet: withIssues(loadSheet(cur.id)) });
+});
+
+sheets.get('/sheets/:id/photo', requireUser, (req, res) => {
+  const s = getDb().prepare('SELECT photo_path FROM sheets WHERE id = ?').get(req.params.id);
+  if (!s?.photo_path) throw httpError(404, 'مفيش صورة للورقة دي');
+  const root = resolve(dataDir(), 'photos');
+  const file = resolve(dataDir(), s.photo_path);
+  if (!file.startsWith(root + sep) || !fs.existsSync(file)) throw httpError(404, 'ملف الصورة مش موجود');
+  res.setHeader('Cache-Control', 'private, max-age=86400');
+  res.sendFile(file);
+});
+
 // ---------- edit while in review ----------
 sheets.put('/sheets/:id', requirePerm('sheets.review'), (req, res) => {
   const db = getDb();
   const cur = loadSheet(req.params.id);
   if (cur.status !== 'review') throw httpError(409, 'الورقة دي اتأكدت — مينفعش تتعدل. ألغيها وسجلها تاني.');
   const machine = db.prepare('SELECT * FROM machines WHERE id = ?').get(cur.machine_id);
-  const { header, lines } = readInput(req.body || {}, machine);
+  const { header, lines } = readInput(req.body || {}, machine, { paperRows: cur.source === 'photo' });
   reject(lines);
   db.transaction(() => {
     db.prepare("UPDATE sheets SET technician_id=?, sheet_date=?, notes=?, updated_at=datetime('now') WHERE id=?")
@@ -233,6 +338,7 @@ sheets.get('/home', requireUser, (req, res) => {
     const u = updateStatus();
     extra.system = { backup_stale: b.stale, backup_error: !!b.error, backup_copy_error: !!b.copy_error, update_available: u.available && u.installed };
   }
+  if (can(req.user, 'sheets.create')) extra.missing_printed = missingSheets().length;
   if (can(req.user, 'deliveries.manage')) {
     extra.undelivered = db.prepare(`SELECT COUNT(*) n FROM lines l JOIN sheets s ON s.id = l.sheet_id WHERE s.status = 'confirmed' AND l.delivery_id IS NULL`).get().n;
   }

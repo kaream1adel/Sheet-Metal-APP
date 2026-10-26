@@ -6,6 +6,7 @@ import { renderPricing } from './pricing.js';
 import { renderClientPage, renderPayments, renderFollowup, renderSettings } from './accounts.js';
 import { renderDeliveries } from './delivery.js';
 import { renderShare } from './system.js';
+import { renderScan, renderPrintForms } from './scan.js';
 
 export const state = { user: null, version: '', lookups: null, homeCounts: null };
 export const can = (perm) => !!state.user?.permissions.includes(perm);
@@ -81,7 +82,9 @@ const NAV = [
   // phone: shown in the phone's bottom bar; the rest sit behind "المزيد".
   { href: '#/', label: 'الرئيسية', phone: true },
   { href: '#/sheets', label: 'الورق', badge: () => state.homeCounts?.review, phone: true },
-  { href: '#/sheets/new', label: 'إدخال ورقة', perm: 'sheets.create', phone: true },
+  { href: '#/scan', label: 'صوّر ورقة', perm: 'sheets.create', phone: true },
+  { href: '#/sheets/new', label: 'إدخال ورقة', perm: 'sheets.create' },
+  { href: '#/forms', label: 'طباعة الورق', perm: 'sheets.create', badge: () => state.homeCounts?.missing_printed },
   { href: '#/pricing', label: 'التسعير', perm: 'money.view', badge: () => state.homeCounts?.unpriced },
   { href: '#/deliveries', label: 'التسليم', perm: 'deliveries.manage', phone: true },
   { href: '#/payments', label: 'المدفوعات', perm: 'money.view' },
@@ -136,6 +139,8 @@ async function route() {
     else if (hash === '#/followup' && can('money.view')) await renderFollowup(main);
     else if (hash === '#/settings' && can('settings.manage')) await renderSettings(main);
     else if (hash === '#/share' && can('settings.manage')) await renderShare(main);
+    else if (hash === '#/scan' && can('sheets.create')) renderScan(main);
+    else if (hash === '#/forms' && can('sheets.create')) await renderPrintForms(main);
     else if (hash === '#/technicians') await renderTechnicians(main);
     else if (hash === '#/users' && can('users.manage')) await renderUsers(main);
     else main.replaceChildren(h('h1', {}, 'الصفحة مش موجودة'));
@@ -172,10 +177,12 @@ async function renderHome(main) {
         h('a', { href: '#/followup', class: 'stat' + (c.cheques_due ? ' alert' : ''), style: 'text-decoration:none;color:inherit' },
           h('b', {}, c.cheques_due ?? 0), h('span', {}, 'شيكات مستحقة الأسبوع ده')),
       ] : null,
+      c.missing_printed ? h('a', { href: '#/forms', class: 'stat alert', style: 'text-decoration:none;color:inherit' },
+        h('b', {}, c.missing_printed), h('span', {}, 'ورقة اتطبعت ولسه ما اترفعتش')) : null,
       h('div', { class: 'stat' }, h('b', {}, c.clients ?? 0), h('span', {}, 'عميل')),
       h('div', { class: 'stat' }, h('b', {}, c.technicians ?? 0), h('span', {}, 'فني'))),
     can('sheets.create')
-      ? h('div', { class: 'actions' }, state.lookups.machines.map((m) =>
+      ? h('div', { class: 'actions' }, h('a', { class: 'btn primary', href: '#/scan' }, '📷 صوّر ورقة'), state.lookups.machines.map((m) =>
         h('a', { class: 'btn', href: `#/sheets/new?machine=${m.id}` }, `+ ورقة ${m.name}`)))
       : '',
   );

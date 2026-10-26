@@ -67,10 +67,28 @@ function copyOut(name) {
     if (!fs.existsSync(target)) throw new Error('الفولدر مش موجود (الفلاشة مش متركبة؟)');
     const sub = ensureDir(join(target, 'Sheet Metal backups'));
     fs.copyFileSync(join(backupsDir(), name), join(sub, name));
+    copyNewPhotos(join(sub, 'photos'));
     setMeta('backup_copy_error', null);
   } catch (err) {
     setMeta('backup_copy_error', `${new Date().toISOString()} ${err.message}`);
   }
+}
+
+// Sheet photos are files next to the database: copy the ones the target doesn't have yet.
+function copyNewPhotos(targetRoot) {
+  const walk = (rel) => {
+    const src = join(dataDir(), 'photos', rel);
+    if (!fs.existsSync(src)) return;
+    for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+      const r = join(rel, e.name);
+      if (e.isDirectory()) walk(r);
+      else if (!fs.existsSync(join(targetRoot, r))) {
+        ensureDir(join(targetRoot, rel));
+        fs.copyFileSync(join(src, e.name), join(targetRoot, r));
+      }
+    }
+  };
+  walk('');
 }
 
 function prune() {

@@ -10,6 +10,8 @@ import { money } from './routes/money.js';
 import { deliveries } from './routes/deliveries.js';
 import { print } from './routes/print.js';
 import { system } from './routes/system.js';
+import { forms } from './routes/forms.js';
+import { createRequire } from 'module';
 import { APP_VERSION } from './version.js';
 
 export { APP_VERSION };
@@ -18,6 +20,8 @@ export function createApp() {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', 'loopback'); // the tunnel connects from localhost
+  // Straightened sheet photos are a few hundred KB of base64; everything else is small.
+  app.use(['/api/sheets/photo', /^\/api\/sheets\/\d+\/photo$/], express.json({ limit: '12mb' }));
   app.use(express.json({ limit: '1mb' }));
 
   // State-changing requests must be JSON: a plain HTML form on another site can't send that.
@@ -77,10 +81,14 @@ export function createApp() {
   app.use('/api', money);
   app.use('/api', deliveries);
   app.use('/api', system);
+  app.use(forms);
   app.use('/api', (_req, _res, next) => next(httpError(404, 'مش موجود')));
   app.use(print);
 
   // ---------- the screens ----------
+  // The QR reader the photo screen loads (served from node_modules, works offline).
+  const jsqr = createRequire(import.meta.url).resolve('jsqr/dist/jsQR.js');
+  app.get('/vendor/jsQR.js', (_req, res) => res.sendFile(jsqr));
   app.use(express.static(PUBLIC_DIR, { setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));
   app.get('*', (_req, res) => res.sendFile('index.html', { root: PUBLIC_DIR }));
 
