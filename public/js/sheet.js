@@ -1,10 +1,10 @@
 // Sheet entry + review. One screen does both: type (or later, correct the OCR),
 // see red/yellow cells, and confirm once every red is fixed and every yellow was visited.
-import { h, toast, fmtDate, fmtNum, todayISO, fold, asciiDigits, formModal, confirmModal, fill } from './ui.js';
+import { h, toast, fmtDate, fmtNum, todayISO, fold, asciiDigits, formModal, confirmModal, fill, icon } from './ui.js';
 import { get, post, put, del } from './api.js';
-import { state, can, go, loadLookups } from './app.js';
+import { state, can, go, loadLookups, saveClient } from './app.js';
 import { formLayout } from './forms.js';
-import { photoToPage, uploadBody, pagePreview } from './scan.js';
+import { photoToPage, uploadBody, pagePreview, clientSplit } from './scan.js';
 import { pageFromUrl, readPage, teachFrom } from './reader.js';
 import { SURE } from './ocr.js';
 
@@ -66,15 +66,17 @@ export async function renderSheet(main, id) {
     lines: [],
   };
   const editable = sheet ? sheet.status === 'review' && can('sheets.review') : can('sheets.create');
-  // A photo sheet keeps every line on its printed row, under its strip of the photo.
+  // A photo sheet keeps every line on its row (under its strip of the printed form, or
+  // in the order the reader found it on any other paper), so reads stay on their row.
   const layout = sheet?.photo ? formLayout(sheet.machine_code, sheet.photo.form_version) : null;
-  if (layout) {
+  const keepRows = !!sheet?.photo;
+  if (keepRows) {
     const byRow = [];
     for (const l of model.lines) byRow[Number(sheet.lines.find((x) => x.id === l.id)?.row_no || byRow.length + 1) - 1] = l;
-    const n = Math.max(layout.table.rows, byRow.length);
+    const n = layout ? Math.max(layout.table.rows, byRow.length) : Math.max(byRow.length + (editable ? 2 : 0), editable ? 6 : 0);
     model.lines = Array.from({ length: n }, (_, i) => byRow[i] || blankLine());
   }
-  if (editable && !layout) {
+  if (editable && !keepRows) {
     const target = Math.max(6, model.lines.length + 2);
     while (model.lines.length < target) model.lines.push(blankLine());
   }
@@ -113,21 +115,47 @@ export async function renderSheet(main, id) {
 
   const title = sheet
     ? `ورقة ${sheet.machine_name}${sheet.sheet_no ? ' رقم ' + sheet.sheet_no : ''}`
-    : 'إدخال ورقة';
+    : 'إدخال ورقة بالإيد';
 
   const titleEl = h('h1', {}, title);
-  main.replaceChildren(
-    h('div', { class: 'top' },
+  // A plain photo (not the printed form) sits beside the table.
+  const plainPhoto = sheet?.photo && !layout;
+  const work = h('div', {}, pagerBox, tableBox, issuesBox, actionsBox, statusBox);
+  fill(main,
+    h('div', { class: 'page-head' },
       h('div', {}, titleEl,
-        sheet ? h('div', { class: 'small muted' },
-          h('span', { class: `pill ${sheet.status}` }, sheet.status_name), ' ',
+        sheet ? h('div', { class: 'sub' },
+          h('span', { class: `pill ${sheet.status}` }, sheet.status_name), '  ',
           `اتسجلت ${fmtDate(sheet.created_at)} بواسطة ${sheet.created_by_name || '—'}`,
           sheet.confirmed_at ? ` · اتأكدت ${fmtDate(sheet.confirmed_at)} بواسطة ${sheet.confirmed_by_name || '—'}` : '',
-          sheet.cancel_reason ? ` · سبب الإلغاء: ${sheet.cancel_reason}` : '') : null),
+          sheet.cancel_reason ? ` · سبب الإلغاء: ${sheet.cancel_reason}` : '') : h('div', { class: 'sub' }, 'اكتب الورقة زي ما هي على الورق. ~ أو // يعني زي اللي فوق.')),
       countsBox),
+    nextStep(),
     h('div', { class: 'sheet-head' },
       field('المكنة', machineSel), field('رقم الورقة', noIn), field('الفني', techSel), field('تاريخ الورقة', dateIn), field('ملاحظات', notesIn)),
-    pagerBox, tableBox, issuesBox, actionsBox, statusBox);
+    plainPhoto
+      ? h('div', { class: 'review-wrap with-photo' }, work,
+        h('div', { class: 'photo-panel' }, h('img', { src: sheet.photo.url, alt: 'صورة الورقة', onclick: () => window.open(sheet.photo.url, '_blank') }),
+          h('div', { class: 'small muted', style: 'margin-top:6px' }, 'دوس على الصورة تكبرها')))
+      : work);
+
+  // What happens next with this sheet, in one line.
+  function nextStep() {
+    if (!sheet) return null;
+    if (sheet.status === 'confirmed') {
+      const firstClient = sheet.lines.find((l) => l.client_id)?.client_id;
+      return h('div', { class: 'next-step done' }, icon('check-circle', 'lg'),
+        h('div', { class: 't' }, h('b', {}, 'الورقة اتأكدت، وكل سطر راح لعميله.'), clientSplit(sheet)),
+        can('money.view') ? h('a', { class: 'btn primary', href: firstClient ? `#/pricing/${firstClient}` : '#/pricing' }, icon('tag'), 'سعّر الشغل')
+          : can('deliveries.manage') ? h('a', { class: 'btn', href: '#/deliveries' }, icon('truck'), 'سلّم الشغل') : null);
+    }
+    if (sheet.status === 'review' && editable) {
+      return h('div', { class: 'next-step' }, icon('list-checks', 'lg'),
+        h('div', { class: 't' }, h('b', {}, 'راجع الخانات الحمرا والصفرا، وبعدين أكّد الورقة.'),
+          h('span', { class: 'small muted' }, 'بعد التأكيد كل سطر بيروح لعميله وبيبقى جاهز للتسعير والتسليم.')));
+    }
+    return null;
+  }
 
   function field(label, input) { return h('div', { class: 'field' }, h('label', {}, label), input); }
 
@@ -223,6 +251,24 @@ export async function renderSheet(main, id) {
       toast(ex.message, true);
       btn.disabled = false;
       btn.textContent = 'اقرا الورقة';
+    }
+  }
+
+  // The online reader (Claude): fills only the empty cells, then the sheet reloads.
+  async function aiReadNow(btn) {
+    btn.disabled = true;
+    const label = btn.lastChild.textContent;
+    btn.lastChild.textContent = 'بيقرا… (دقيقة تقريباً)';
+    try {
+      await saving;
+      await save();
+      const r = await post(`/api/sheets/${model.id}/ai-read`);
+      toast(r.ai.machine_mismatch ? 'اتقرت — بس المكنة ممكن تكون غلط، اتأكد' : `اتقرا ${r.ai.rows} سطر — بص على الصفرا والحمرا`, !!r.ai.machine_mismatch);
+      go(`#/sheets/${model.id}`);
+    } catch (ex) {
+      toast(ex.message, true);
+      btn.disabled = false;
+      btn.lastChild.textContent = label;
     }
   }
 
@@ -377,7 +423,7 @@ export async function renderSheet(main, id) {
     };
     const addClient = async (name) => {
       try {
-        const { client } = await post('/api/clients', { name });
+        const { client } = await saveClient({ name });
         await loadLookups();
         choose({ id: client.id, name: client.name });
         toast(`اتضاف العميل ${client.name}`);
@@ -449,7 +495,7 @@ export async function renderSheet(main, id) {
     changed();
   }
   function removeRow(i) {
-    if (layout && i < layout.table.rows) model.lines[i] = blankLine();
+    if (keepRows && (!layout || i < layout.table.rows)) model.lines[i] = blankLine();
     else model.lines.splice(i, 1);
     if (model.lines.length < 3) model.lines.push(blankLine());
     drawTable();
@@ -460,7 +506,7 @@ export async function renderSheet(main, id) {
   // Server rows are numbered over non-empty lines only; map them back to table rows.
   function rowIndexMap() {
     const map = [];
-    if (layout) { model.lines.forEach((l, i) => { map[i] = i; }); return map; } // photo: row n is line n
+    if (keepRows) { model.lines.forEach((l, i) => { map[i] = i; }); return map; } // photo: row n is line n
     model.lines.forEach((l, i) => { if (!isEmpty(l)) map.push(i); });
     return map;
   }
@@ -540,7 +586,7 @@ export async function renderSheet(main, id) {
       sheet_no: model.sheet_no || null, notes: model.notes,
       lines: model.lines.map((l, i) => ({ ...l, row_no: i + 1 })).filter((l) => !isEmpty(l)).map((l) => {
         const o = { ...l };
-        if (!layout) delete o.row_no;
+        if (!keepRows) delete o.row_no;
         for (const k of TEXT_FIELDS) o[k] = String(o[k] || '');
         delete o.material_text;
         return o;
@@ -569,7 +615,7 @@ export async function renderSheet(main, id) {
       paintIssues();
       drawIssues();
       drawPager();
-      statusBox.textContent = dirty ? 'فيه تعديلات…' : 'اتحفظ ✓';
+      statusBox.textContent = dirty ? 'فيه تعديلات…' : 'اتحفظ';
     } catch (ex) {
       dirty = true;
       statusBox.textContent = '';
@@ -591,7 +637,7 @@ export async function renderSheet(main, id) {
     }
     try {
       const r = await post(`/api/sheets/${model.id}/confirm`, { acks: [...acks] });
-      toast('الورقة اتأكدت ✓');
+      toast('الورقة اتأكدت');
       if (layout) await teachFrom(r.sheet).catch((err) => console.warn('teaching failed', err));
       go(`#/sheets/${model.id}`);
     } catch (ex) {
@@ -614,7 +660,7 @@ export async function renderSheet(main, id) {
         if (!jpeg) { toast(result.problems[0], true); return; }
         if (!result.ok && !(await confirmModal('الصورة فيها مشكلة', `${result.problems.join(' ')} ترفعها برضه؟`, 'ارفعها'))) return;
         await post(`/api/sheets/${model.id}/photo`, uploadBody(result, jpeg, !result.ok));
-        toast('الصورة اتغيرت ✓');
+        toast('الصورة اتغيرت');
         go(`#/sheets/${model.id}`);
       } catch (ex) { toast(ex.message, true); }
     } });
@@ -633,8 +679,11 @@ export async function renderSheet(main, id) {
           try { await del(`/api/sheets/${model.id}`); toast('اتمسحت'); go('#/sheets'); } catch (ex) { toast(ex.message, true); }
         } }, 'مسح الورقة'));
       }
+      if (sheet?.photo && state.lookups.ai) {
+        btns.push(h('button', { class: 'btn', type: 'button', onclick: (e) => aiReadNow(e.target) }, icon('sparkle'), 'اقرا بالذكاء الاصطناعي'));
+      }
       if (layout) {
-        btns.push(h('button', { class: 'btn', type: 'button', onclick: (e) => readNow(e.target) }, 'اقرا الورقة'));
+        if (!state.lookups.ai) btns.push(h('button', { class: 'btn', type: 'button', onclick: (e) => readNow(e.target) }, icon('scan'), 'اقرا الورقة'));
         btns.push(retakeButton());
         btns.push(h('button', { class: 'btn', type: 'button', title: 'ورقة تجربة: البرنامج يتعلم منها ومتتحسبش شغل', onclick: async () => {
           if (!(await confirmModal('تعليم البرنامج بس', 'الورقة دي هتتحفظ كدرس: البرنامج يتعلم منها، بس مش هتتحسب شغل ولا هتروح للتسعير. اتأكد إن كل اللي في الورقة متكتب صح. نكمل؟', 'احفظها كدرس'))) return;
@@ -643,7 +692,7 @@ export async function renderSheet(main, id) {
             await save();
             const r = await post(`/api/sheets/${model.id}/lesson`);
             await teachFrom(r.sheet);
-            toast('البرنامج اتعلم من الورقة ✓');
+            toast('البرنامج اتعلم من الورقة');
             go(`#/sheets/${model.id}`);
           } catch (ex) { toast(ex.message, true); }
         } }, 'تعليم البرنامج بس'));

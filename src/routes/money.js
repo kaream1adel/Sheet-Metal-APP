@@ -6,7 +6,7 @@ import { httpError, cleanText, parseDate, parseNumber, todayISO } from '../util.
 import { toPiastres } from '../money.js';
 import { UNITS, unitsFor, lineQty, amountOf, defaultUnits } from '../units.js';
 import { LINE_SELECT, workText, statement, balanceOf, openDebts } from '../ledger.js';
-import { getSettings, setSettings, DEFAULT_SETTINGS } from '../settings.js';
+import { getSettings, setSettings, publicSettings, DEFAULT_SETTINGS } from '../settings.js';
 import { MACHINE_FIELDS } from '../sheets.js';
 
 export const money = Router();
@@ -462,7 +462,7 @@ money.get('/followup', admin, (_req, res) => {
 });
 
 // ---------- settings ----------
-money.get('/settings', admin, (_req, res) => res.json({ settings: getSettings() }));
+money.get('/settings', admin, (_req, res) => res.json({ settings: publicSettings() }));
 
 money.put('/settings', requirePerm('settings.manage'), (req, res) => {
   const b = req.body || {};
@@ -478,8 +478,9 @@ money.put('/settings', requirePerm('settings.manage'), (req, res) => {
       .map((x) => cleanText(x, 40)).filter(Boolean);
     v.payment_methods = list.length ? [...new Set(list)] : DEFAULT_SETTINGS.payment_methods;
   }
-  const before = getSettings();
-  const after = setSettings(v);
-  audit(req.user.id, 'update', 'settings', null, before, after);
-  res.json({ settings: after });
+  const pick = (o) => Object.fromEntries(Object.keys(v).map((k) => [k, o[k]]));
+  const before = pick(getSettings());
+  setSettings(v);
+  audit(req.user.id, 'update', 'settings', null, before, pick(getSettings()));
+  res.json({ settings: publicSettings() });
 });

@@ -46,5 +46,14 @@ export function cleanText(v, max = 200) {
   return String(v ?? '').trim().slice(0, max);
 }
 
+// Arabic name folding for comparing names: أإآ→ا, ى→ي, ة→ه, no diacritics/tatweel,
+// no leading "ال" on each word, single spaces. "المصريه" and "مصرية" fold the same.
+export function foldName(s) {
+  return String(s ?? '').trim().toLowerCase()
+    .replace(/[\u064B-\u0652\u0640]/g, '')
+    .replace(/[أإآ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه')
+    .split(/\s+/).map((w) => w.replace(/^ال(?=..)/, '')).join(' ');
+}
+
 // Express 4 doesn't catch errors from async handlers: pass them on to the error handler.
 export const asyncRoute = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);

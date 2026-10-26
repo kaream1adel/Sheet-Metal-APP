@@ -1,8 +1,8 @@
 // Admin money screens: client page, payments, follow-up, settings.
-import { h, toast, money, fmtDate, fmtNum, todayISO, formModal, confirmModal } from './ui.js';
+import { h, toast, money, fmtDate, fmtNum, todayISO, formModal, confirmModal, icon, pageHead } from './ui.js';
 import { get, post, put, api } from './api.js';
 import { state } from './app.js';
-import { backupsCard, updateCard, autostartCard } from './system.js';
+import { backupsCard, updateCard, autostartCard, aiCard } from './system.js';
 import { machinesCard, auditCard } from './reports.js';
 
 const pill = (cls, text) => h('span', { class: `pill ${cls}` }, text);
@@ -222,23 +222,23 @@ export async function renderPayments(main) {
 // ---------- follow-up ----------
 export async function renderFollowup(main) {
   const f = await get('/api/followup');
-  const section = (title, items, render, empty) => h('div', { class: 'card', style: 'margin-bottom:12px' },
-    h('h2', {}, title, ' ', h('span', { class: 'muted small' }, `(${items.length})`)),
+  const section = (ic, title, items, render, empty) => h('div', { class: 'card', style: 'margin-bottom:12px' },
+    h('h2', { style: 'display:flex;align-items:center;gap:8px' }, icon(ic), title, h('span', { class: 'muted small' }, `(${items.length})`)),
     items.length ? h('div', { class: 'table-wrap', style: 'border:0' }, h('table', {}, h('tbody', {}, items.map(render)))) : h('div', { class: 'muted small' }, empty));
   const cl = (id, name) => h('a', { href: `#/clients/${id}` }, name);
   main.replaceChildren(
-    h('div', { class: 'top' }, h('h1', {}, 'المتابعة'), h('span', { class: 'muted small' }, `متأخر = عدى ${f.alert_days} يوم من التسليم ومتدفعش (تتغير من الإعدادات)`)),
-    section('🔴 فلوس متأخرة', f.overdue, (o) => h('tr', {}, h('td', {}, cl(o.client_id, o.client_name)), h('td', {}, o.text),
+    pageHead('المتابعة', `فلوس متأخرة، شيكات، وعود، وشغل مستني خطوة. متأخر = عدى ${f.alert_days} يوم من التسليم ومتدفعش (تتغير من الإعدادات).`),
+    section('warning-circle', 'فلوس متأخرة', f.overdue, (o) => h('tr', {}, h('td', {}, cl(o.client_id, o.client_name)), h('td', {}, o.text),
       h('td', { class: 'num' }, money(o.open)), h('td', {}, o.days !== null ? `${o.days} يوم من التسليم` : o.due ? `استحقاق ${fmtDate(o.due)}` : '')), 'مفيش متأخرات.'),
-    section('🟡 مستحق قريب', f.due_soon, (o) => h('tr', {}, h('td', {}, cl(o.client_id, o.client_name)), h('td', {}, o.text),
+    section('clock', 'مستحق قريب', f.due_soon, (o) => h('tr', {}, h('td', {}, cl(o.client_id, o.client_name)), h('td', {}, o.text),
       h('td', { class: 'num' }, money(o.open)), h('td', {}, `استحقاق ${fmtDate(o.due)}`)), 'مفيش.'),
-    section('📄 شيكات للصرف', f.cheques, (p) => h('tr', {}, h('td', {}, cl(p.client_id, p.client_name)), h('td', { class: 'num' }, money(p.amount)),
+    section('bank', 'شيكات للصرف', f.cheques, (p) => h('tr', {}, h('td', {}, cl(p.client_id, p.client_name)), h('td', { class: 'num' }, money(p.amount)),
       h('td', {}, `استحقاق ${fmtDate(p.cheque_due)}`), h('td', {}, p.reference || '')), 'مفيش شيكات مستحقة الأسبوع ده.'),
-    section('🤝 وعود بالدفع', f.promises, (p) => h('tr', {}, h('td', {}, cl(p.client_id, p.client_name)), h('td', {}, fmtDate(p.promised_date)),
+    section('hand-coins', 'وعود بالدفع', f.promises, (p) => h('tr', {}, h('td', {}, cl(p.client_id, p.client_name)), h('td', {}, fmtDate(p.promised_date)),
       h('td', { class: 'num' }, p.amount ? money(p.amount) : ''), h('td', {}, p.notes)), 'مفيش وعود النهارده أو بكرة.'),
-    section('📦 اتسلم ولسه ما اتسعرش', f.delivered_unpriced, (l) => h('tr', {}, h('td', {}, cl(l.client_id, l.client_name)), h('td', {}, l.text),
+    section('tag', 'اتسلم ولسه ما اتسعرش', f.delivered_unpriced, (l) => h('tr', {}, h('td', {}, cl(l.client_id, l.client_name)), h('td', {}, l.text),
       h('td', {}, `اتسلم ${fmtDate(l.delivered)}`), h('td', {}, h('a', { href: `#/pricing/${l.client_id}` }, 'سعّر'))), 'كل الشغل المتسلم متسعر.'),
-    section('🏭 خلص ولسه ما اتسلمش', f.undelivered, (u) => h('tr', {}, h('td', {}, cl(u.client_id, u.client_name)), h('td', {}, `${u.lines} سطر`),
+    section('truck', 'خلص ولسه ما اتسلمش', f.undelivered, (u) => h('tr', {}, h('td', {}, cl(u.client_id, u.client_name)), h('td', {}, `${u.lines} سطر`),
       h('td', {}, `من ${fmtDate(u.oldest)}`), h('td', {}, h('a', { href: `#/deliveries?client=${u.client_id}` }, 'سلّم'))), 'مفيش.'),
   );
 }
@@ -253,7 +253,7 @@ export async function renderSettings(main) {
   const form = h('form', { class: 'card grid', style: 'align-content:start', onsubmit: async (e) => {
     e.preventDefault();
     const v = Object.fromEntries(new FormData(form));
-    try { await put('/api/settings', v); ok.textContent = 'اتحفظ ✓'; toast('اتحفظ'); } catch (ex) { toast(ex.message, true); }
+    try { await put('/api/settings', v); ok.textContent = 'اتحفظ'; toast('اتحفظ'); } catch (ex) { toast(ex.message, true); }
   } },
   h('h2', {}, 'بيانات الشركة (تظهر في كشف الحساب والإيصالات)'),
   f('company_name', 'اسم الشركة', s.company_name), f('company_phone', 'التليفون', s.company_phone), f('company_address', 'العنوان', s.company_address),
@@ -263,7 +263,7 @@ export async function renderSettings(main) {
   h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'submit' }, 'حفظ'), ok));
   const side = h('div', { class: 'grid', style: 'align-content:start' });
   main.append(h('div', { class: 'settings-grid' }, form, side));
-  for (const make of [updateCard, backupsCard, autostartCard, machinesCard]) {
+  for (const make of [aiCard, updateCard, backupsCard, autostartCard, machinesCard]) {
     try { const card = await make(); if (card) side.append(card); } catch (ex) { side.append(h('div', { class: 'card muted' }, ex.message)); }
   }
   try { main.append(h('div', { style: 'margin-top:14px' }, await auditCard())); } catch { /* not critical */ }

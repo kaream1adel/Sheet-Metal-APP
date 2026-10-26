@@ -1,4 +1,5 @@
 // Tiny DOM helpers shared by the screens.
+import { ICONS } from './icons.js';
 
 // h('div', {class: 'x', onclick: fn}, child, 'text', [more children])
 export function h(tag, attrs = {}, ...children) {
@@ -116,3 +117,26 @@ export function confirmModal(title, text, okLabel = 'تمام') {
     document.body.append(back);
   });
 }
+
+// ---------- building blocks shared by every screen ----------
+
+// <svg> icon that takes the text colour. size: '' | 'lg' | 'xl'
+export function icon(name, size = '') {
+  const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  s.setAttribute('viewBox', '0 0 256 256');
+  s.setAttribute('class', `i ${size}`.trim());
+  s.setAttribute('aria-hidden', 'true');
+  s.innerHTML = ICONS[name] || ''; // trusted, generated at build time
+  return s;
+}
+
+// Page title, one line saying what the page is for, and its main actions.
+export const pageHead = (title, sub, ...actions) => h('div', { class: 'page-head' },
+  h('div', {}, h('h1', {}, title), sub ? h('div', { class: 'sub' }, sub) : null),
+  actions.length ? h('div', { class: 'row' }, actions) : null);
+
+// Nothing to show yet: say why, and what to do about it.
+export const emptyState = (iconName, title, hint, action = null) => h('div', { class: 'card empty' },
+  h('div', { class: 'ic' }, icon(iconName, 'lg')), h('b', {}, title), hint ? h('div', { class: 'small' }, hint) : null, action);
+
+export const skeleton = () => h('div', { class: 'skeleton' }, h('div'), h('div'), h('div'), h('div'));

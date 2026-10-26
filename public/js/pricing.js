@@ -1,6 +1,6 @@
 // Pricing (admin). Lines come pre-filled from the price memory; the admin changes
 // only the exceptions, groups lines into items if needed, and approves.
-import { h, toast, money, fmtDate, fmtNum, asciiDigits, formModal } from './ui.js';
+import { h, toast, money, fmtDate, fmtNum, asciiDigits, formModal, icon, pageHead, emptyState } from './ui.js';
 import { get, post, patch } from './api.js';
 import { go } from './app.js';
 
@@ -19,14 +19,14 @@ const FACT_LABELS = { pieces: 'قطع', ops_per_piece: 'عمليات/قطعة', 
 export async function renderPricing(main, clientId) {
   const { clients } = await get('/api/pricing/clients');
   const side = h('div', { class: 'card', style: 'padding:8px;min-width:190px' },
-    clients.length === 0 ? h('div', { class: 'muted', style: 'padding:8px' }, 'مفيش شغل مستني تسعير ✓')
+    clients.length === 0 ? h('div', { class: 'muted', style: 'padding:8px' }, 'مفيش شغل مستني تسعير')
       : clients.map((c) => h('a', { href: `#/pricing/${c.id}`, class: 'plist' + (Number(clientId) === c.id ? ' on' : '') },
         h('span', {}, c.name), h('span', { class: 'badge-s' }, c.lines))));
   const body = h('div', { style: 'flex:1;min-width:0' });
-  main.replaceChildren(h('div', { class: 'top' }, h('h1', {}, 'التسعير')),
+  main.replaceChildren(pageHead('التسعير', 'الشغل المتأكد جاهز هنا متقسم على العملاء. الأسعار المحفوظة متعبية لوحدها — غيّر الاستثناءات واعتمد.'),
     h('div', { class: 'pricing-wrap' }, side, body));
   if (!clientId && clients[0]) return go(`#/pricing/${clients[0].id}`);
-  if (!clientId) { body.append(h('div', { class: 'card muted' }, 'كل الشغل المتأكد متسعر.')); return; }
+  if (!clientId) { body.append(emptyState('check-circle', 'كل الشغل المتأكد متسعر', 'أول ما ورقة تتأكد، سطورها هتظهر هنا عند عملاؤها.')); return; }
   await renderClientPricing(body, Number(clientId));
 }
 
@@ -51,6 +51,13 @@ async function renderClientPricing(body, clientId) {
       h('div', {}, h('b', { style: 'font-size:17px' }, data.client.name), ' ',
         h('span', { class: 'muted small' }, `· ${data.lines.length} سطر مستني تسعير · الرصيد الحالي ${money(data.balance)}`)),
       h('div', { class: 'row' },
+        // The routine case in one click: everything whose price is remembered for this client.
+        h('button', { class: 'btn', title: 'يحدد السطور اللي كل أسعارها محفوظة لنفس العميل (الخضرا)', onclick: () => {
+          let n = 0;
+          for (const l of lines) { l.selected = l.charges.length > 0 && l.charges.every((c) => c.source === 'exact'); if (l.selected) n++; }
+          draw();
+          toast(n ? `اتحدد ${n} سطر ليهم سعر محفوظ — اعتمدهم من تحت` : 'مفيش سطور كل أسعارها محفوظة', !n);
+        } }, icon('check-circle'), 'اللي ليه سعر محفوظ'),
         h('button', { class: 'btn', onclick: () => bundleSelected() }, 'بند مجمّع للمحدد'),
         h('button', { class: 'btn', onclick: oneRate }, 'سعر واحد للمحدد'),
         h('button', { class: 'btn', onclick: raise }, 'زوّد ٪'),

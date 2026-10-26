@@ -355,4 +355,49 @@ CREATE TABLE sheet_issue_log (
 ALTER TABLE sheets ADD COLUMN no_teach INTEGER NOT NULL DEFAULT 0;
 `,
   },
+  {
+    id: 6,
+    name: 'ai-reading-expenses',
+    sql: `
+-- Every call to the online reader, with what it cost (millionths of a US dollar).
+CREATE TABLE ai_usage (
+  id INTEGER PRIMARY KEY,
+  sheet_id INTEGER REFERENCES sheets(id) ON DELETE SET NULL,
+  model TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_micro_usd INTEGER NOT NULL DEFAULT 0,
+  at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+-- Which reader made a read: 'local' (offline, learned) or 'ai' (online).
+ALTER TABLE cell_reads ADD COLUMN source TEXT NOT NULL DEFAULT 'local';
+
+-- المصروفات: money going out (piastres). Cancelled with a reason, never deleted.
+CREATE TABLE expense_categories (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  sort INTEGER NOT NULL DEFAULT 0,
+  active INTEGER NOT NULL DEFAULT 1
+);
+INSERT INTO expense_categories (name, sort) VALUES
+  ('خامات', 1), ('مرتبات وأجور', 2), ('كهربا ومياه', 3), ('إيجار', 4), ('صيانة وقطع غيار', 5),
+  ('نقل ومواصلات', 6), ('مصاريف إدارية', 7), ('متنوعة', 8);
+CREATE TABLE expenses (
+  id INTEGER PRIMARY KEY,
+  exp_date TEXT NOT NULL,
+  category_id INTEGER NOT NULL REFERENCES expense_categories(id),
+  amount INTEGER NOT NULL CHECK (amount > 0),
+  method TEXT NOT NULL DEFAULT '',
+  payee TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
+  created_by INTEGER NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  cancelled_by INTEGER REFERENCES users(id),
+  cancelled_at TEXT,
+  cancel_reason TEXT
+);
+CREATE INDEX idx_expenses_date ON expenses(exp_date);
+`,
+  },
 ];

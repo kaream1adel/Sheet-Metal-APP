@@ -136,7 +136,7 @@ function readIssues(reads, lines, add) {
       else if (blank) add('yellow', r.row_no, r.field, 'unread', `${FIELD_LABELS[r.field]}: فيه كتابة البرنامج مقدرش يقراها — اكتبها`);
       continue;
     }
-    if (blank || r.value === null || r.confidence >= SURE) continue;
+    if (blank || r.value === null || r.confidence >= SURE || !FIELD_LABELS[r.field]) continue;
     const same = NUMERIC.includes(r.field) ? Number(cur) === Number(r.value) : String(cur) === String(r.value);
     if (same) {
       add('yellow', r.row_no, r.field, 'ocr', `${FIELD_LABELS[r.field]}: ${r.kind === 'ditto' ? 'اتقرت "زي اللي فوق"' : 'اتقرت أوتوماتيك'} (متأكد ${Math.round(r.confidence * 100)}%) — بص عليها`);

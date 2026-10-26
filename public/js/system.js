@@ -2,6 +2,7 @@
 // and the مشاركة page (tunnel link + QR codes).
 import { h, toast, confirmModal, fill } from './ui.js';
 import { get, post, put } from './api.js';
+import { loadLookups } from './app.js';
 
 const fmtTime = (iso) => (iso ? new Date(iso.includes('T') ? iso : iso.replace(' ', 'T')).toLocaleString('ar-EG') : '—');
 const fmtSize = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} م.ب` : `${Math.max(1, Math.round(n / 1024))} ك.ب`);
@@ -29,7 +30,7 @@ export async function backupsCard() {
       h('div', { class: 'row' },
         h('button', { class: 'btn primary', onclick: async (e) => {
           e.target.disabled = true;
-          try { await post('/api/backups'); toast('اتعملت نسخة احتياطية ✓'); await load(); } catch (ex) { toast(ex.message, true); e.target.disabled = false; }
+          try { await post('/api/backups'); toast('اتعملت نسخة احتياطية'); await load(); } catch (ex) { toast(ex.message, true); e.target.disabled = false; }
         } }, 'اعمل نسخة دلوقتي')),
       h('div', { class: 'field' }, h('label', {}, 'انسخ كل نسخة كمان على فلاشة أو فولدر OneDrive (اختياري)'),
         h('div', { class: 'row' }, dirInput, h('button', { class: 'btn', onclick: async () => {
@@ -52,7 +53,7 @@ export async function backupsCard() {
     if (!ok) return;
     try {
       await post(`/api/backups/${encodeURIComponent(b.name)}/restore`, { confirm: true });
-      toast('البيانات اترجعت ✓');
+      toast('البيانات اترجعت');
       setTimeout(() => location.reload(), 800);
     } catch (ex) { toast(ex.message, true); }
   }
@@ -93,7 +94,7 @@ export async function updateCard() {
     btn.textContent = 'جاري التحميل…';
     try {
       const r = await post('/api/update/apply');
-      await waitForRestart(`اتحدث لنسخة ${r.version} ✓`);
+      await waitForRestart(`اتحدث لنسخة ${r.version}`);
     } catch (ex) {
       toast(ex.message, true);
       btn.disabled = false;
@@ -107,7 +108,7 @@ export async function updateCard() {
     if (!(await confirmModal('رجوع للنسخة السابقة', text, 'ارجع'))) return;
     try {
       await post('/api/update/rollback', { confirm: true });
-      await waitForRestart('رجعنا للنسخة السابقة ✓');
+      await waitForRestart('رجعنا للنسخة السابقة');
     } catch (ex) { toast(ex.message, true); }
   }
   render(await get('/api/update'));
@@ -193,4 +194,35 @@ export async function renderShare(main) {
     h('div', { class: 'top' }, h('h1', {}, 'مشاركة'), h('span', { class: 'muted small' }, 'صوّر الكود بموبايلك عشان تفتح البرنامج')),
     h('div', { class: 'grid share-grid' }, internet, wifi),
     h('div', { style: 'margin-top:12px;max-width:560px' }, settings));
+}
+
+// ---------- القراءة بالذكاء الاصطناعي ----------
+export async function aiCard() {
+  const s = await get('/api/ai');
+  const card = h('div', { class: 'card grid' });
+  const enabled = h('input', { type: 'checkbox', checked: s.enabled });
+  const key = h('input', { type: 'password', autocomplete: 'off', placeholder: s.configured ? '•••••••• (محفوظ — اكتب مفتاح جديد لو عايز تغيره)' : 'sk-ant-…' });
+  const model = h('select', {}, s.models.map((m) => h('option', { value: m.id, selected: m.id === s.model }, m.name)));
+  const status = h('div', { class: 'small muted' });
+  const usd = (v) => `$${v.toFixed(v < 1 ? 3 : 2)}`;
+  fill(card,
+    h('h2', {}, 'القراءة بالذكاء الاصطناعي (بالنت)'),
+    h('div', { class: 'small' }, 'صورة ورقة الفني بتتبعت لـ Claude (من شركة Anthropic) يقراها ويرجّع الجدول، وكل سطر بيتربط بعميله من قايمتك. أدق بكتير من القراءة من غير نت، وبتشتغل من أول ورقة وعلى أي ورق — حتى الورق القديم.'),
+    h('div', { class: 'small muted' }, 'محتاجة نت ومفتاح خدمة (API key) من console.anthropic.com. التكلفة بتتحسب على الورقة: تقريباً 0.10$ بـ Opus، و0.05$ بـ Sonnet، وأقل من سنت بـ Haiku. صورة الورقة (أسماء العملاء والكميات، من غير أسعار) بتتبعت للخدمة. من غير نت البرنامج بيرجع للقراءة العادية لوحده.'),
+    h('label', { class: 'row' }, enabled, 'شغّل القراءة بالذكاء الاصطناعي'),
+    h('div', { class: 'field' }, h('label', {}, 'مفتاح الخدمة'), key),
+    h('div', { class: 'field' }, h('label', {}, 'الموديل'), model),
+    h('div', { class: 'row' },
+      h('button', { class: 'btn primary', onclick: async () => {
+        const body = { enabled: enabled.checked, model: model.value };
+        if (key.value.trim()) body.api_key = key.value.trim();
+        try { await put('/api/ai', body); key.value = ''; toast('اتحفظ'); await loadLookups(); aiCard().then((c) => card.replaceWith(c)); } catch (ex) { toast(ex.message, true); }
+      } }, 'حفظ'),
+      h('button', { class: 'btn', onclick: async () => {
+        status.textContent = 'بنجرب…';
+        try { await post('/api/ai/test'); status.textContent = 'المفتاح شغال.'; } catch (ex) { status.textContent = ex.message; }
+      } }, 'جرّب المفتاح')),
+    status,
+    h('div', { class: 'small muted' }, `الشهر ده: ${s.usage.month_reads} ورقة · ${usd(s.usage.month_usd)} — من الأول: ${s.usage.total_reads} ورقة · ${usd(s.usage.total_usd)}`));
+  return card;
 }

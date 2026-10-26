@@ -13,7 +13,10 @@ import { system } from './routes/system.js';
 import { forms } from './routes/forms.js';
 import { ocr } from './routes/ocr.js';
 import { reports } from './routes/reports.js';
+import { ai } from './routes/ai.js';
+import { accounting } from './routes/accounting.js';
 import { createRequire } from 'module';
+import { join, dirname } from 'path';
 import { APP_VERSION } from './version.js';
 
 export { APP_VERSION };
@@ -85,6 +88,8 @@ export function createApp() {
   app.use('/api', system);
   app.use('/api', ocr);
   app.use('/api', reports);
+  app.use('/api', ai);
+  app.use('/api', accounting);
   app.use(forms);
   app.use('/api', (_req, _res, next) => next(httpError(404, 'مش موجود')));
   app.use(print);
@@ -93,6 +98,9 @@ export function createApp() {
   // The QR reader the photo screen loads (served from node_modules, works offline).
   const jsqr = createRequire(import.meta.url).resolve('jsqr/dist/jsQR.js');
   app.get('/vendor/jsQR.js', (_req, res) => res.sendFile(jsqr));
+  // The interface font (IBM Plex Sans Arabic), served locally so it works offline.
+  const fonts = join(dirname(createRequire(import.meta.url).resolve('@fontsource/ibm-plex-sans-arabic/package.json')), 'files');
+  app.use('/fonts', express.static(fonts, { maxAge: '30d', immutable: true }));
   app.use(express.static(PUBLIC_DIR, { setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));
   app.get('*', (_req, res) => res.sendFile('index.html', { root: PUBLIC_DIR }));
 

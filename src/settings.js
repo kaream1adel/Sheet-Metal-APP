@@ -11,7 +11,16 @@ export const DEFAULT_SETTINGS = {
   tunnel_enabled: true,         // publish the app over HTTPS for phones (cloudflared)
   tunnel_token: '',             // a named Cloudflare tunnel (fixed link); empty = free quick link
   tunnel_url: '',               // the fixed link that goes with the token
+  ai_enabled: false,            // read sheet photos with Claude over the internet
+  ai_api_key: '',               // secret: never sent to a browser
+  ai_model: 'claude-opus-5-5',
 };
+
+// Settings as the browser may see them: secrets replaced by "is it set".
+export function publicSettings() {
+  const { tunnel_token, ai_api_key, ...rest } = getSettings();
+  return { ...rest, tunnel_token_set: !!tunnel_token, ai_api_key_set: !!ai_api_key };
+}
 
 export function getSettings() {
   const out = { ...DEFAULT_SETTINGS };

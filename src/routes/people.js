@@ -4,8 +4,9 @@ import { getDb, audit } from '../db.js';
 import { requirePerm, requireUser, hashPassword, checkPasswordRule, publicUser } from '../auth.js';
 import { PERMISSIONS, ROLE_NAMES, can } from '../permissions.js';
 import { toPiastres, stripMoney, CLIENT_MONEY_FIELDS } from '../money.js';
-import { httpError, cleanText, parseDate } from '../util.js';
+import { httpError, cleanText, parseDate, foldName } from '../util.js';
 import { balanceOf } from '../ledger.js';
+import { aiStatus } from '../ai.js';
 
 export const people = Router();
 
@@ -18,6 +19,7 @@ people.get('/lookups', requireUser, (_req, res) => {
       .map((m) => ({ ...m, aliases: JSON.parse(m.aliases) })),
     technicians: db.prepare('SELECT id, name, digit_system FROM technicians WHERE active = 1 ORDER BY name').all(),
     clients: db.prepare('SELECT id, name FROM clients WHERE active = 1 ORDER BY name').all(),
+    ai: aiStatus().enabled, // only whether the online reader is on; never the key
   });
 });
 
@@ -120,10 +122,23 @@ function clientInput(req, current = {}) {
   return out;
 }
 
+// One client, one name: a new name that folds to (or contains) an existing one is very
+// likely the same client written differently. Asked once; { force: true } adds it anyway.
+function similarClients(name, exceptId = null) {
+  const f = foldName(name);
+  if (!f) return [];
+  return getDb().prepare('SELECT id, name FROM clients WHERE id IS NOT ?').all(exceptId).filter((c) => {
+    const g = foldName(c.name);
+    return g === f || (Math.min(g.length, f.length) >= 3 && (g.includes(f) || f.includes(g)));
+  }).slice(0, 5);
+}
+
 people.post('/clients', requirePerm('clients.edit'), (req, res) => {
   const db = getDb();
   const c = clientInput(req);
   if (db.prepare('SELECT 1 FROM clients WHERE name = ?').get(c.name)) throw httpError(409, 'العميل ده موجود بنفس الاسم');
+  const similar = req.body?.force ? [] : similarClients(c.name);
+  if (similar.length) throw httpError(409, `في عميل اسمه قريب: ${similar.map((s) => s.name).join('، ')}`, { similar });
   const id = db.transaction(() => {
     const r = db.prepare('INSERT INTO clients (name, phone, notes, active, opening_balance, opening_date) VALUES (?,?,?,?,?,?)')
       .run(c.name, c.phone, c.notes, c.active, c.opening_balance, c.opening_date);
@@ -141,6 +156,10 @@ people.patch('/clients/:id', requirePerm('clients.edit'), (req, res) => {
   const c = clientInput(req, cur);
   if (c.name !== cur.name && db.prepare('SELECT 1 FROM clients WHERE name = ? AND id <> ?').get(c.name, cur.id)) {
     throw httpError(409, 'فيه عميل تاني بنفس الاسم');
+  }
+  if (c.name !== cur.name && !req.body?.force) {
+    const similar = similarClients(c.name, cur.id);
+    if (similar.length) throw httpError(409, `في عميل اسمه قريب: ${similar.map((s) => s.name).join('، ')}`, { similar });
   }
   db.transaction(() => {
     db.prepare('UPDATE clients SET name=?, phone=?, notes=?, active=?, opening_balance=?, opening_date=? WHERE id=?')

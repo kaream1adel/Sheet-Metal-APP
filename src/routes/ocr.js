@@ -68,10 +68,11 @@ ocr.get('/ocr/stats', requirePerm('settings.manage'), (_req, res) => {
   const lessons = db.prepare('SELECT COUNT(*) n FROM sheets WHERE status = \'cancelled\' AND cancel_reason = ?').get(LESSON).n;
   // Accuracy per week and per kind of cell, from confirmed sheets.
   const accuracy = db.prepare(`SELECT strftime('%Y-%W', finalized_at) AS week,
-      CASE WHEN kind = 'ditto' THEN 'ditto' WHEN field IN ('client_id','material_id','material_source') THEN field ELSE 'number' END AS what,
+      CASE WHEN kind = 'ditto' THEN 'ditto' WHEN field IN ('client_id','material_id','material_source') THEN field
+        WHEN field IN ('part_name','client_text','sheet_size') THEN 'text' WHEN field = 'work_date' THEN 'date' ELSE 'number' END AS what, source,
       COUNT(*) AS reads, SUM(correct) AS correct, SUM(CASE WHEN confidence >= 0.9 THEN 1 ELSE 0 END) AS sure,
       SUM(CASE WHEN confidence >= 0.9 AND correct = 0 THEN 1 ELSE 0 END) AS sure_wrong
-    FROM cell_reads WHERE finalized_at IS NOT NULL AND correct IS NOT NULL GROUP BY week, what ORDER BY week DESC, what`).all();
+    FROM cell_reads WHERE finalized_at IS NOT NULL AND correct IS NOT NULL GROUP BY week, what, source ORDER BY week DESC, source, what`).all();
   const unread = db.prepare(`SELECT COUNT(*) n FROM cell_reads WHERE finalized_at IS NOT NULL AND kind = 'ink'`).get().n;
   res.json({ version: FEATURE_VERSION, sheets, lessons, samples, accuracy, unread });
 });

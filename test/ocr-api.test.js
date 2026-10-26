@@ -38,7 +38,7 @@ test('reads fill the sheet; unsure ones are yellow until someone looks', async (
       { row: 2, field: 'client_id', kind: 'ditto', confidence: 0.7 },
       { row: 2, field: 'pieces', kind: 'ink', confidence: 0 },
       { row: 3, field: 'pieces', kind: 'ink', confidence: 0 },
-      { row: 1, field: 'part_name', kind: 'value', value: 'x', confidence: 1 }, // not a read field: ignored
+      { row: 1, field: 'notes', kind: 'value', value: 'x', confidence: 1 }, // not a read field: ignored
       { row: 1, field: 'client_id', kind: 'value', value: '999', confidence: 1 }, // duplicate cell: ignored
       { row: 4, field: 'client_id', kind: 'value', value: '999', confidence: 1 }, // no such client: unread
     ],

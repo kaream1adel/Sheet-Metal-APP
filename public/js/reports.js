@@ -84,7 +84,7 @@ export async function renderTechnicianProfile(main, id) {
       h('div', { class: 'card grid' }, h('h2', {}, 'أكتر حاجات بتتصلح في ورقه'),
         p.mistakes.length ? p.mistakes.map((m) => h('div', { class: 'row', style: 'justify-content:space-between' },
           h('span', {}, `${MISTAKE[m.code] || m.code} — ${FIELD[m.field] || m.field}`), h('b', { class: 'num' }, m.n)))
-          : h('div', { class: 'muted' }, 'مفيش غلطات اتسجلت. 👍'),
+          : h('div', { class: 'muted' }, 'مفيش غلطات اتسجلت.'),
         h('div', { class: 'small muted' }, 'اللي لقاه البرنامج في الورق قبل ما يتصلح في المراجعة. مفيد عشان تكلم الفني أو تعدل الورقة.'))),
     h('h2', { style: 'margin-top:16px' }, 'أرقامه المعتادة'),
     Object.keys(p.ranges).length === 0 ? h('div', { class: 'card muted' }, 'محتاج 3 سطور على الأقل.') :

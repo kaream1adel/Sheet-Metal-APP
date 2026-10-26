@@ -13,7 +13,10 @@ import { normalizeLine, isEmptyLine, validateSheet, summarize, MACHINE_FIELDS, F
 import { dataDir, ensureDir } from '../paths.js';
 import { formLayout, parseQr } from '../../public/js/forms.js';
 import { missingSheets } from './forms.js';
+import { monthly } from './accounting.js';
 import { NUMBER_FIELDS, NAME_FIELDS } from '../../public/js/ocr.js';
+import { readSheetPhoto, toReads, matchTechnician } from '../ai.js';
+import { asyncRoute } from '../util.js';
 
 export const sheets = Router();
 
@@ -40,7 +43,7 @@ function loadSheet(id) {
     WHERE l.sheet_id = ? ORDER BY l.row_no`).all(id);
   for (const l of s.lines) l.ditto_fields = parseList(l.ditto_fields);
   s.acks = db.prepare('SELECT issue_key FROM sheet_acks WHERE sheet_id = ?').all(id).map((a) => a.issue_key);
-  s.reads = db.prepare('SELECT row_no, field, kind, value, confidence, candidates FROM cell_reads WHERE sheet_id = ? ORDER BY row_no').all(id)
+  s.reads = db.prepare('SELECT row_no, field, kind, value, confidence, candidates, source FROM cell_reads WHERE sheet_id = ? ORDER BY row_no').all(id)
     .map((r) => ({ ...r, candidates: parseList(r.candidates) }));
   return s;
 }
@@ -56,7 +59,7 @@ function withIssues(s) {
     let meta = {};
     try { meta = JSON.parse(s.photo_meta || '{}'); } catch { /* keep {} */ }
     // The file name changes with every new photo, so the URL does too (no stale cache).
-    photo = { url: `/api/sheets/${s.id}/photo?f=${encodeURIComponent(s.photo_path.split('/').pop())}`, form_version: meta.form_version || 1, quality: meta.quality, forced: !!meta.forced };
+    photo = { url: `/api/sheets/${s.id}/photo?f=${encodeURIComponent(s.photo_path.split('/').pop())}`, form_version: meta.form_version ?? 1, quality: meta.quality, forced: !!meta.forced };
   }
   if (s.status === 'review') logIssues(s.id, issues);
   return { ...s, status_name: STATUS_NAMES[s.status], fields: MACHINE_FIELDS[s.machine_code], issues, counts: summarize(issues), photo };
@@ -188,11 +191,21 @@ sheets.post('/sheets', requirePerm('sheets.create'), (req, res) => {
 // plus what its QR code says. Body: { qr, image: "data:image/jpeg;base64,...", quality, forced }.
 const MAX_PHOTO = 8 * 1024 * 1024;
 
+// Without a QR code it is a plain photo of any paper (the old sheets): the machine is
+// chosen by the person and the sheet number is optional.
 function readPhoto(body) {
-  const qr = parseQr(body?.qr);
-  if (!qr) throw httpError(400, 'الكود اللي على الورقة مش مفهوم');
-  const layout = formLayout(qr.machine, qr.version);
-  if (!layout) throw httpError(400, 'نموذج الورقة دي مش معروف — حدّث البرنامج');
+  let qr = null;
+  if (body?.qr) {
+    qr = parseQr(body.qr);
+    if (!qr) throw httpError(400, 'الكود اللي على الورقة مش مفهوم');
+    if (!formLayout(qr.machine, qr.version)) throw httpError(400, 'نموذج الورقة دي مش معروف — حدّث البرنامج');
+  } else {
+    const m = getDb().prepare('SELECT * FROM machines WHERE id = ? AND active = 1').get(body?.machine_id);
+    if (!m) throw httpError(400, 'اختار المكنة');
+    const no = String(body?.sheet_no ?? '').replace(/[٠-٩]/g, (c) => '٠١٢٣٤٥٦٧٨٩'.indexOf(c)).trim();
+    if (no && !/^\d{1,7}$/.test(no)) throw httpError(400, 'رقم الورقة أرقام بس');
+    qr = { version: 0, machine: m.code, sheetNo: no ? Number(no) : null };
+  }
   const m = /^data:image\/jpeg;base64,([A-Za-z0-9+/=]+)$/.exec(String(body?.image || ''));
   const buf = m ? Buffer.from(m[1], 'base64') : null;
   if (!buf || buf.length < 1000 || buf[0] !== 0xff || buf[1] !== 0xd8) throw httpError(400, 'الصورة مش واصلة سليمة. جرب تاني.');
@@ -201,7 +214,7 @@ function readPhoto(body) {
   if (!machine) throw httpError(400, 'المكنة دي مش موجودة في البرنامج');
   const q = body?.quality || {};
   const meta = {
-    form_version: qr.version,
+    form_version: qr.version, // 0 = a plain photo, not the printed form
     quality: { sharpness: Number(q.sharpness) || 0, brightness: Number(q.brightness) || 0, coverage: Number(q.coverage) || 0 },
     forced: !!body?.forced, // uploaded although the quality check complained
     uploaded_at: new Date().toISOString(),
@@ -210,7 +223,7 @@ function readPhoto(body) {
 }
 
 function savePhoto(machine, sheetNo, buf) {
-  const rel = `photos/${machine.code}/${sheetNo}_${Date.now()}.jpg`;
+  const rel = `photos/${machine.code}/${sheetNo ?? 'x'}_${Date.now()}.jpg`;
   ensureDir(join(dataDir(), 'photos', machine.code));
   fs.writeFileSync(join(dataDir(), rel), buf);
   return rel;
@@ -221,14 +234,17 @@ function cleanReads(raw, machine) {
   if (!Array.isArray(raw)) return [];
   if (raw.length > 500) throw httpError(400, 'القراءات كتير قوي');
   const db = getDb();
-  const allowed = new Set(['thickness', 'client_id', 'material_id', 'material_source', ...MACHINE_FIELDS[machine.code]]
-    .filter((f) => NUMBER_FIELDS.includes(f) || NAME_FIELDS.includes(f)));
+  // The offline reader reads numbers and names; the online one also part names, dates and
+  // client names that are not in the list yet (client_text).
+  const allowed = new Set(['thickness', 'client_id', 'material_id', 'material_source', 'part_name', 'work_date', 'client_text', ...MACHINE_FIELDS[machine.code]]);
   const exists = {
     client_id: db.prepare('SELECT 1 FROM clients WHERE id = ?'),
     material_id: db.prepare('SELECT 1 FROM materials WHERE id = ?'),
   };
   const valueOk = (field, v) => {
     if (NUMBER_FIELDS.includes(field)) return /^\d+(\.\d+)?$/.test(v);
+    if (['part_name', 'client_text', 'sheet_size'].includes(field)) return v.length > 0;
+    if (field === 'work_date') return /^\d{4}-\d{2}-\d{2}$/.test(v);
     if (field === 'material_source') return v === 'client' || v === 'factory';
     return /^\d+$/.test(v) && !!exists[field].get(Number(v));
   };
@@ -240,13 +256,14 @@ function cleanReads(raw, machine) {
     const kind = ['value', 'ditto', 'ink'].includes(r?.kind) ? r.kind : null;
     if (!Number.isInteger(row) || row < 1 || row > 60 || !allowed.has(field) || !kind || seen.has(`${row}:${field}`)) continue;
     seen.add(`${row}:${field}`);
-    let value = kind === 'value' && r.value !== null && r.value !== undefined ? cleanText(String(r.value), 40) : null;
+    let value = kind === 'value' && r.value !== null && r.value !== undefined ? cleanText(String(r.value), 120) : null;
     if (value !== null && !valueOk(field, value)) value = null;
     const confidence = Math.max(0, Math.min(1, Number(r.confidence) || 0));
     const candidates = (Array.isArray(r.candidates) ? r.candidates : []).slice(0, 3)
       .map((c) => ({ value: cleanText(String(c?.value ?? ''), 40), score: Math.max(0, Math.min(1, Number(c?.score) || 0)) }))
       .filter((c) => valueOk(field, c.value));
-    out.push({ row_no: row, field, kind: kind === 'value' && value === null ? 'ink' : kind, value, confidence: kind === 'value' && value === null ? 0 : confidence, candidates });
+    out.push({ row_no: row, field, kind: kind === 'value' && value === null ? 'ink' : kind, value, confidence: kind === 'value' && value === null ? 0 : confidence, candidates,
+      source: r?.source === 'ai' ? 'ai' : 'local' });
   }
   return out.sort((a, b) => a.row_no - b.row_no);
 }
@@ -270,6 +287,8 @@ function applyReads(sheetId, rawReads, userId) {
         l[r.field] = r.value;
         if (!l.ditto_fields.includes(r.field)) l.ditto_fields.push(r.field);
       }
+    } else if (r.field === 'client_text') {
+      if (blank(l.client_text) && blank(l.client_id)) l.client_text = r.value;
     } else if (r.kind === 'value' && blank(l[r.field])) {
       l[r.field] = r.value;
     }
@@ -278,10 +297,10 @@ function applyReads(sheetId, rawReads, userId) {
   const { lines: clean } = readInput({ lines: [...lines.values()] }, machine, { paperRows: true });
   db.transaction(() => {
     // A cell read again gets the new read; cells not in this reading keep theirs.
-    const ins = db.prepare(`INSERT INTO cell_reads (sheet_id, row_no, field, kind, value, confidence, candidates) VALUES (?,?,?,?,?,?,?)
+    const ins = db.prepare(`INSERT INTO cell_reads (sheet_id, row_no, field, kind, value, confidence, candidates, source) VALUES (?,?,?,?,?,?,?,?)
       ON CONFLICT (sheet_id, row_no, field) DO UPDATE SET kind = excluded.kind, value = excluded.value,
-        confidence = excluded.confidence, candidates = excluded.candidates, read_at = datetime('now')`);
-    for (const r of reads) ins.run(sheetId, r.row_no, r.field, r.kind, r.value, r.confidence, JSON.stringify(r.candidates));
+        confidence = excluded.confidence, candidates = excluded.candidates, source = excluded.source, read_at = datetime('now')`);
+    for (const r of reads) ins.run(sheetId, r.row_no, r.field, r.kind, r.value, r.confidence, JSON.stringify(r.candidates), r.source);
     writeLines(sheetId, clean);
     db.prepare("UPDATE sheets SET updated_at = datetime('now') WHERE id = ?").run(sheetId);
     audit(userId, 'read', 'sheet', sheetId, { lines: cur.lines.map(pickLine) },
@@ -296,6 +315,35 @@ sheets.post('/sheets/:id/reads', requirePerm('sheets.review'), (req, res) => {
   applyReads(cur.id, req.body?.reads, req.user.id);
   res.json({ sheet: withIssues(loadSheet(cur.id)) });
 });
+
+// اقرا بالذكاء الاصطناعي: the online reader fills the sheet (empty cells only), and the
+// technician / date / notes when they are still empty.
+sheets.post('/sheets/:id/ai-read', requirePerm('sheets.review'), asyncRoute(async (req, res) => {
+  const db = getDb();
+  const cur = loadSheet(req.params.id);
+  if (cur.status !== 'review') throw httpError(409, 'الورقة دي مش مستنية مراجعة');
+  if (!cur.photo_path) throw httpError(409, 'الورقة دي مالهاش صورة');
+  let meta = {};
+  try { meta = JSON.parse(cur.photo_meta || '{}'); } catch { /* plain */ }
+  const { result, usage } = await readSheetPhoto(cur.photo_path, { machine: cur.machine_code, form: meta.form_version > 0, sheetId: cur.id });
+  applyReads(cur.id, toReads(result, cur.machine_code), req.user.id);
+  const header = {};
+  const tech = matchTechnician(result.technician_name);
+  if (!cur.technician_id && tech) header.technician_id = tech;
+  if (!cur.sheet_date && /^\d{4}-\d{2}-\d{2}$/.test(result.sheet_date || '')) header.sheet_date = result.sheet_date;
+  if (!cur.notes && result.notes) header.notes = cleanText(result.notes, 1000);
+  if (Object.keys(header).length) {
+    db.transaction(() => {
+      db.prepare(`UPDATE sheets SET ${Object.keys(header).map((k) => `${k} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ?`).run(...Object.values(header), cur.id);
+      audit(req.user.id, 'update', 'sheet', cur.id, Object.fromEntries(Object.keys(header).map((k) => [k, cur[k]])), { ...header, by: 'ai' });
+    })();
+  }
+  res.json({
+    sheet: withIssues(loadSheet(cur.id)),
+    ai: { rows: result.rows.length, usage, technician_written: result.technician_name,
+      machine_mismatch: result.machine !== 'unknown' && result.machine !== cur.machine_code ? result.machine : null },
+  });
+}));
 
 export const LESSON = 'درس لتعليم البرنامج';
 
@@ -320,12 +368,13 @@ sheets.post('/sheets/:id/lesson', requirePerm('sheets.review'), (req, res) => {
 sheets.post('/sheets/photo', requirePerm('sheets.create'), (req, res) => {
   const db = getDb();
   const { qr, machine, buf, meta } = readPhoto(req.body);
-  const dup = db.prepare("SELECT id FROM sheets WHERE machine_id = ? AND sheet_no = ? AND status <> 'cancelled'").get(machine.id, String(qr.sheetNo));
+  const no = qr.sheetNo === null ? null : String(qr.sheetNo);
+  const dup = no && db.prepare("SELECT id FROM sheets WHERE machine_id = ? AND sheet_no = ? AND status <> 'cancelled'").get(machine.id, no);
   if (dup) throw httpError(409, `ورقة ${machine.name} رقم ${qr.sheetNo} اترفعت قبل كده`, { existing_id: dup.id });
   const photo = savePhoto(machine, qr.sheetNo, buf);
   const id = db.transaction(() => {
     const r = db.prepare("INSERT INTO sheets (machine_id, sheet_no, source, photo_path, photo_meta, created_by) VALUES (?,?,'photo',?,?,?)")
-      .run(machine.id, String(qr.sheetNo), photo, JSON.stringify(meta), req.user.id);
+      .run(machine.id, no, photo, JSON.stringify(meta), req.user.id);
     audit(req.user.id, 'create', 'sheet', r.lastInsertRowid, undefined, { source: 'photo', machine: machine.code, sheet_no: qr.sheetNo, photo, quality: meta.quality, forced: meta.forced });
     return r.lastInsertRowid;
   })();
@@ -342,17 +391,17 @@ sheets.post('/sheets/:id/photo', requirePerm('sheets.review'), (req, res) => {
   const cur = loadSheet(req.params.id);
   if (cur.status !== 'review') throw httpError(409, 'الورقة دي اتأكدت — مينفعش تتغير صورتها');
   const { qr, machine, buf, meta } = readPhoto(req.body);
-  if (machine.id !== cur.machine_id || (cur.sheet_no && cur.sheet_no !== String(qr.sheetNo))) {
+  if (machine.id !== cur.machine_id || (cur.sheet_no && qr.sheetNo !== null && cur.sheet_no !== String(qr.sheetNo))) {
     throw httpError(409, `دي صورة ورقة ${machine.name} رقم ${qr.sheetNo}، مش الورقة دي`);
   }
-  if (!cur.sheet_no && db.prepare("SELECT 1 FROM sheets WHERE machine_id = ? AND sheet_no = ? AND status <> 'cancelled' AND id <> ?").get(machine.id, String(qr.sheetNo), cur.id)) {
+  if (!cur.sheet_no && qr.sheetNo !== null && db.prepare("SELECT 1 FROM sheets WHERE machine_id = ? AND sheet_no = ? AND status <> 'cancelled' AND id <> ?").get(machine.id, String(qr.sheetNo), cur.id)) {
     throw httpError(409, `ورقة ${machine.name} رقم ${qr.sheetNo} اترفعت قبل كده`);
   }
   const photo = savePhoto(machine, qr.sheetNo, buf);
   db.transaction(() => {
     // The old file stays on disk: nothing is ever silently thrown away.
     db.prepare("UPDATE sheets SET photo_path = ?, photo_meta = ?, sheet_no = ?, source = 'photo', updated_at = datetime('now') WHERE id = ?")
-      .run(photo, JSON.stringify(meta), String(qr.sheetNo), cur.id);
+      .run(photo, JSON.stringify(meta), qr.sheetNo === null ? cur.sheet_no : String(qr.sheetNo), cur.id);
     audit(req.user.id, 'photo', 'sheet', cur.id, { photo: cur.photo_path }, { photo, quality: meta.quality, forced: meta.forced });
   })();
   res.json({ sheet: withIssues(loadSheet(cur.id)) });
@@ -469,6 +518,13 @@ sheets.get('/home', requireUser, (req, res) => {
       AND NOT EXISTS (SELECT 1 FROM billing_item_lines bl JOIN billing_items b ON b.id = bl.item_id WHERE bl.line_id = l.id AND b.status = 'active')`).get().n;
     const balances = Object.values(allBalances());
     extra.outstanding = balances.filter((b) => b > 0).reduce((s, b) => s + b, 0);
+    extra.month = monthly(`${today.slice(0, 7)}-01`, today).totals;
+    // Work confirmed and waiting for a price, per client (the next step of the flow).
+    extra.ready_clients = db.prepare(`SELECT c.id, c.name, COUNT(*) AS lines FROM lines l JOIN sheets s ON s.id = l.sheet_id JOIN clients c ON c.id = l.client_id
+      WHERE s.status = 'confirmed'
+        AND NOT EXISTS (SELECT 1 FROM line_prices p WHERE p.line_id = l.id AND p.status = 'active')
+        AND NOT EXISTS (SELECT 1 FROM billing_item_lines bl JOIN billing_items b ON b.id = bl.item_id WHERE bl.line_id = l.id AND b.status = 'active')
+      GROUP BY c.id ORDER BY lines DESC LIMIT 6`).all();
     extra.cheques_due = db.prepare(`SELECT COUNT(*) n FROM payments WHERE is_cheque = 1 AND cheque_status = 'pending' AND cancelled_at IS NULL AND cheque_due <= ?`)
       .get(todayISO(new Date(Date.now() + 7 * 86400000))).n;
   }
