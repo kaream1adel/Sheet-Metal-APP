@@ -1,6 +1,6 @@
 // Sheet entry + review. One screen does both: type (or later, correct the OCR),
 // see red/yellow cells, and confirm once every red is fixed and every yellow was visited.
-import { h, toast, fmtDate, fmtNum, todayISO, fold, asciiDigits, formModal, confirmModal } from './ui.js';
+import { h, toast, fmtDate, fmtNum, todayISO, fold, asciiDigits, formModal, confirmModal, fill } from './ui.js';
 import { get, post, put, del } from './api.js';
 import { state, can, go, loadLookups } from './app.js';
 
@@ -94,6 +94,10 @@ export async function renderSheet(main, id) {
   const tableBox = h('div', { class: 'table-wrap lines-wrap' });
   const issuesBox = h('div', { class: 'issues' });
   const actionsBox = h('div', { class: 'actions' });
+  // Phone: one row per screen with a pager (the PC shows the whole table).
+  const phone = matchMedia('(max-width: 820px)');
+  const pagerBox = h('div', { class: 'pager' });
+  let cur = 0;
 
   const title = sheet
     ? `ورقة ${sheet.machine_name}${sheet.sheet_no ? ' رقم ' + sheet.sheet_no : ''}`
@@ -111,7 +115,7 @@ export async function renderSheet(main, id) {
       countsBox),
     h('div', { class: 'sheet-head' },
       field('المكنة', machineSel), field('رقم الورقة', noIn), field('الفني', techSel), field('تاريخ الورقة', dateIn), field('ملاحظات', notesIn)),
-    tableBox, issuesBox, actionsBox, statusBox);
+    pagerBox, tableBox, issuesBox, actionsBox, statusBox);
 
   function field(label, input) { return h('div', { class: 'field' }, h('label', {}, label), input); }
 
@@ -131,7 +135,42 @@ export async function renderSheet(main, id) {
       h('thead', {}, h('tr', {}, h('th', {}, 'م'), cols.map((c) => h('th', {}, c.label)), h('th', {}, ''))),
       h('tbody', {}, model.lines.map((l, i) => lineRow(l, i, cols)))));
     paintIssues();
+    drawPager();
   }
+
+  // Rows that still need a look: a red issue or a yellow one not yet seen.
+  function rowsToCheck() {
+    const rows = new Set();
+    for (const is of pending()) {
+      const tr = is.row ? cellFor(is)?.closest('tr') : null;
+      if (tr) rows.add(Number(tr.dataset.i));
+    }
+    return [...rows].sort((a, b) => a - b);
+  }
+  function drawPager() {
+    if (!tableBox.isConnected) { phone.removeEventListener('change', drawPager); return; }
+    const table = tableBox.querySelector('table.lines');
+    const one = editable && phone.matches && !!table;
+    table?.classList.toggle('one-row', one);
+    if (!one) { pagerBox.replaceChildren(); return; }
+    const n = model.lines.length;
+    cur = Math.max(0, Math.min(cur, n - 1));
+    table.querySelectorAll('tbody tr').forEach((tr) => tr.classList.toggle('cur', Number(tr.dataset.i) === cur));
+    const toCheck = rowsToCheck();
+    const nextCheck = toCheck.find((i) => i > cur) ?? toCheck[0];
+    const goRow = (i) => { cur = i; drawPager(); table.querySelector('tr.cur input, tr.cur select')?.focus({ preventScroll: true }); };
+    fill(pagerBox,
+      h('button', { class: 'btn', type: 'button', disabled: cur === 0, onclick: () => goRow(cur - 1) }, '‹ اللي قبله'),
+      h('b', {}, `سطر ${cur + 1} من ${n}`),
+      h('button', { class: 'btn', type: 'button', onclick: () => {
+        if (cur === n - 1) { model.lines.push(blankLine()); drawTable(); }
+        goRow(cur + 1);
+      } }, cur === n - 1 ? 'سطر جديد +' : 'اللي بعده ›'),
+      nextCheck !== undefined && nextCheck !== cur
+        ? h('button', { class: 'btn primary', type: 'button', onclick: () => goRow(nextCheck) }, `محتاج مراجعة (${toCheck.length}) ›`)
+        : null);
+  }
+  phone.addEventListener('change', drawPager);
 
   function readValue(l, c) {
     if (c.kind === 'client') return l.client_text || '—';
@@ -320,7 +359,7 @@ export async function renderSheet(main, id) {
       const is = issues.find((x) => x.key === k);
       if (is && is.level === 'yellow' && !acks.has(k)) { acks.add(k); changedAny = true; }
     }
-    if (changedAny) { holder.classList.add('seen'); drawIssues(); }
+    if (changedAny) { holder.classList.add('seen'); drawIssues(); drawPager(); }
   }
   const pending = () => issues.filter((i) => i.level === 'red' || !acks.has(i.key));
 
@@ -340,6 +379,8 @@ export async function renderSheet(main, id) {
     }, h('b', {}, is.row ? `سطر ${is.row}` : 'الورقة'), is.message)));
   }
   function focusIssue(is) {
+    const tr = is.row ? cellFor(is)?.closest('tr') : null;
+    if (tr && Number(tr.dataset.i) !== cur && phone.matches) { cur = Number(tr.dataset.i); drawPager(); }
     const el = cellFor(is);
     const input = el && (el.matches('input,select') ? el : el.querySelector('input,select'));
     if (input) { input.focus(); input.select?.(); markSeen(input); }
@@ -394,6 +435,7 @@ export async function renderSheet(main, id) {
       for (const k of [...acks]) if (!issues.some((x) => x.key === k)) acks.delete(k);
       paintIssues();
       drawIssues();
+      drawPager();
       statusBox.textContent = dirty ? 'فيه تعديلات…' : 'اتحفظ ✓';
     } catch (ex) {
       dirty = true;
@@ -427,7 +469,7 @@ export async function renderSheet(main, id) {
   function drawActions() {
     const btns = [];
     if (editable) {
-      btns.push(h('button', { class: 'btn', type: 'button', onclick: () => { model.lines.push(blankLine()); drawTable(); } }, '+ سطر'));
+      btns.push(h('button', { class: 'btn', type: 'button', onclick: () => { model.lines.push(blankLine()); cur = model.lines.length - 1; drawTable(); } }, '+ سطر'));
       if (can('sheets.confirm')) btns.push(h('button', { class: 'btn primary', type: 'button', onclick: confirmSheet }, 'تأكيد الورقة'));
       btns.push(h('button', { class: 'btn', type: 'button', onclick: async () => { await save(); toast('اتحفظت — تقدر تكمل بعدين'); go('#/sheets'); } }, 'حفظ وأكمل بعدين'));
       if (model.id) {

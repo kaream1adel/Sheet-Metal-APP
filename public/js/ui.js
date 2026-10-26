@@ -19,6 +19,12 @@ export function h(tag, attrs = {}, ...children) {
   return el;
 }
 
+// Like el.replaceChildren, but skips null/false and flattens arrays (as h() does).
+export function fill(el, ...children) {
+  el.replaceChildren(...children.flat(Infinity).filter((c) => c !== null && c !== undefined && c !== false));
+  return el;
+}
+
 let toastTimer;
 export function toast(msg, bad = false) {
   const t = document.getElementById('toast');

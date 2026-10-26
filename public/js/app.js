@@ -1,10 +1,11 @@
 // Shell, router and the simple screens. The sheet screen lives in sheet.js.
-import { h, toast, money, fmtDate, formModal } from './ui.js';
+import { h, toast, money, fmtDate, formModal, fill } from './ui.js';
 import { get, post, patch } from './api.js';
 import { renderSheet } from './sheet.js';
 import { renderPricing } from './pricing.js';
 import { renderClientPage, renderPayments, renderFollowup, renderSettings } from './accounts.js';
 import { renderDeliveries } from './delivery.js';
+import { renderShare } from './system.js';
 
 export const state = { user: null, version: '', lookups: null, homeCounts: null };
 export const can = (perm) => !!state.user?.permissions.includes(perm);
@@ -24,6 +25,8 @@ async function boot() {
   state.user = s.user;
   await loadLookups();
   route();
+  const after = sessionStorage.getItem('after-restart');
+  if (after) { sessionStorage.removeItem('after-restart'); toast(after); }
 }
 window.addEventListener('hashchange', () => state.user && route());
 window.addEventListener('signed-out', () => { state.user = null; renderLogin(); });
@@ -75,16 +78,18 @@ function renderSetup() {
 
 // ---------- shell ----------
 const NAV = [
-  { href: '#/', label: 'الرئيسية' },
-  { href: '#/sheets', label: 'الورق', badge: () => state.homeCounts?.review },
-  { href: '#/sheets/new', label: 'إدخال ورقة', perm: 'sheets.create' },
+  // phone: shown in the phone's bottom bar; the rest sit behind "المزيد".
+  { href: '#/', label: 'الرئيسية', phone: true },
+  { href: '#/sheets', label: 'الورق', badge: () => state.homeCounts?.review, phone: true },
+  { href: '#/sheets/new', label: 'إدخال ورقة', perm: 'sheets.create', phone: true },
   { href: '#/pricing', label: 'التسعير', perm: 'money.view', badge: () => state.homeCounts?.unpriced },
-  { href: '#/deliveries', label: 'التسليم', perm: 'deliveries.manage' },
+  { href: '#/deliveries', label: 'التسليم', perm: 'deliveries.manage', phone: true },
   { href: '#/payments', label: 'المدفوعات', perm: 'money.view' },
   { href: '#/followup', label: 'المتابعة', perm: 'money.view' },
   { href: '#/clients', label: 'العملاء' },
   { href: '#/technicians', label: 'الفنيين' },
   { href: '#/users', label: 'المستخدمين', perm: 'users.manage' },
+  { href: '#/share', label: 'مشاركة', perm: 'settings.manage' },
   { href: '#/settings', label: 'الإعدادات', perm: 'settings.manage' },
 ];
 
@@ -94,16 +99,17 @@ function shell(content) {
     const base = hash.split('?')[0];
     const on = n.href === '#/' ? base === '#/' : base === n.href || (n.href !== '#/sheets/new' && base.startsWith(n.href + '/') && !base.startsWith('#/sheets/new'));
     const b = n.badge?.();
-    return h('a', { href: n.href, class: on ? 'on' : '' }, n.label, b ? h('span', { class: 'badge' }, b) : null);
+    return h('a', { href: n.href, class: [on ? 'on' : '', n.phone ? 'ph' : ''].join(' ').trim() }, n.label, b ? h('span', { class: 'badge' }, b) : null);
   });
-  app.replaceChildren(h('div', { class: 'shell' },
-    h('nav', { class: 'side' },
-      h('div', { class: 'brand' }, h('b', {}, 'Sheet Metal'), h('span', {}, 'شركة الصفا')),
-      nav,
-      h('div', { class: 'foot' }, `${state.user.display_name}`, h('br'),
-        h('button', { onclick: async () => { await post('/api/logout'); state.user = null; renderLogin(); } }, 'خروج'),
-        h('div', { class: 'small', style: 'opacity:.7;margin-top:8px' }, `نسخة ${state.version}`))),
-    h('main', {}, content)));
+  const side = h('nav', { class: 'side' },
+    h('div', { class: 'brand' }, h('b', {}, 'Sheet Metal'), h('span', {}, 'شركة الصفا')),
+    nav,
+    h('button', { class: 'more', type: 'button', onclick: () => side.classList.toggle('open') }, 'المزيد'),
+    h('div', { class: 'foot' }, `${state.user.display_name}`, h('br'),
+      h('button', { onclick: async () => { await post('/api/logout'); state.user = null; renderLogin(); } }, 'خروج'),
+      h('div', { class: 'small', style: 'opacity:.7;margin-top:8px' }, `نسخة ${state.version}`)));
+  side.addEventListener('click', (e) => { if (e.target.closest('a')) side.classList.remove('open'); });
+  app.replaceChildren(h('div', { class: 'shell' }, side, h('main', {}, content)));
 }
 
 async function refreshCounts() {
@@ -129,6 +135,7 @@ async function route() {
     else if (hash === '#/payments' && can('money.view')) await renderPayments(main);
     else if (hash === '#/followup' && can('money.view')) await renderFollowup(main);
     else if (hash === '#/settings' && can('settings.manage')) await renderSettings(main);
+    else if (hash === '#/share' && can('settings.manage')) await renderShare(main);
     else if (hash === '#/technicians') await renderTechnicians(main);
     else if (hash === '#/users' && can('users.manage')) await renderUsers(main);
     else main.replaceChildren(h('h1', {}, 'الصفحة مش موجودة'));
@@ -141,8 +148,15 @@ export const go = (hash) => { if (location.hash === hash) route(); else location
 // ---------- home ----------
 async function renderHome(main) {
   const c = state.homeCounts || {};
-  main.replaceChildren(
+  const sys = c.system || {};
+  const alerts = [
+    sys.backup_error ? 'آخر نسخة احتياطية فشلت — افتح الإعدادات.' : sys.backup_stale ? 'مفيش نسخة احتياطية من أكتر من يومين — افتح الإعدادات.' : null,
+    sys.backup_copy_error ? 'النسخة الاحتياطية متنسختش على الفلاشة/OneDrive — اتأكد إنها متركبة.' : null,
+  ].filter(Boolean);
+  fill(main,
     h('div', { class: 'top' }, h('h1', {}, `أهلاً ${state.user.display_name}`)),
+    alerts.map((a) => h('a', { href: '#/settings', class: 'issue red', style: 'text-decoration:none;margin-bottom:8px' }, a)),
+    sys.update_available ? h('a', { href: '#/settings', class: 'issue yellow', style: 'text-decoration:none;margin-bottom:8px' }, 'في نسخة جديدة من البرنامج — افتح الإعدادات ودوس تحديث.') : null,
     h('div', { class: 'grid stats' },
       h('a', { href: '#/sheets', class: 'stat' + (c.review ? ' alert' : ''), style: 'text-decoration:none;color:inherit' },
         h('b', {}, c.review ?? 0), h('span', {}, 'ورق مستني المراجعة')),

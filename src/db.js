@@ -8,7 +8,10 @@ import { seedDefaults } from './seed.js';
 
 let db = null;
 
-export function openDb(file = join(ensureDir(dataDir()), 'sheet-metal.sqlite')) {
+export const dbPath = () => join(ensureDir(dataDir()), 'sheet-metal.sqlite');
+export const LATEST_SCHEMA = Math.max(...MIGRATIONS.map((m) => m.id));
+
+export function openDb(file = dbPath()) {
   db = new Database(file);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
@@ -35,6 +38,10 @@ export function schemaVersion(d = getDb()) {
 
 export function migrate(d) {
   const current = schemaVersion(d);
+  // Data written by a newer build (e.g. after a rollback without restoring): refuse, don't guess.
+  if (current > LATEST_SCHEMA) {
+    throw new Error(`database schema ${current} is newer than this version of the app (${LATEST_SCHEMA})`);
+  }
   for (const m of MIGRATIONS) {
     if (m.id <= current) continue;
     d.transaction(() => {

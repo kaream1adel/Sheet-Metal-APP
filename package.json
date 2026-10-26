@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test test/core.test.js test/money.test.js",
+    "test": "node --test test/core.test.js test/money.test.js test/system.test.js",
     "create-admin": "node src/cli.js create-admin"
   },
   "engines": {
@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
-    "express": "^4.21.1"
+    "express": "^4.21.1",
+    "qrcode": "^1.5.4"
   }
 }

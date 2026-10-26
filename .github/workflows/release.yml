@@ -1,0 +1,57 @@
+# Every push to main: tests, then (only if green) a Windows package that the app's
+# تحديث button downloads. Pull requests run the tests only.
+name: test and release
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: write
+
+env:
+  # Must match the major version of node\node.exe bundled on the workshop PC
+  # (the package carries native code built for it; the app refuses a mismatch).
+  NODE_VERSION: '22'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No data in the public repo
+        run: node scripts/check-repo.js
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  release:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm prune --omit=dev
+      - name: Build the package
+        shell: bash
+        env:
+          BUILD: ${{ github.run_number }}
+          COMMIT: ${{ github.sha }}
+        run: node scripts/package.js
+      - name: Publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "build-${{ github.run_number }}" dist/sheet-metal-win-x64.tar.gz dist/manifest.json \
+            --title "Build ${{ github.run_number }}" --notes-file dist/notes.txt --latest

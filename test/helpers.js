@@ -38,6 +38,7 @@ export function client(base) {
     return { status: res.status, data };
   };
   return {
+    get cookie() { return cookie; },
     get: (u) => call('GET', u),
     post: (u, b = {}, o) => call('POST', u, b, o),
     put: (u, b) => call('PUT', u, b),

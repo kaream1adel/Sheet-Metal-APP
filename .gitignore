@@ -5,10 +5,18 @@ backups/
 *.sqlite-*
 *.db
 
-# Runtime / bundled tools
+# Runtime / bundled tools (and the code the update button downloads)
+versions/
+current.txt
+previous.txt
+update-trial.txt
+version.json
+*.tar.gz
 node_modules/
 node/
 cloudflared.exe
+cloudflared
+dist/
 config.bat
 .env
 

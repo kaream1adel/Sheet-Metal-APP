@@ -4,6 +4,8 @@ import { getDb, audit } from '../db.js';
 import { requirePerm, requireUser } from '../auth.js';
 import { can } from '../permissions.js';
 import { allBalances } from '../ledger.js';
+import { backupStatus } from '../backup.js';
+import { updateStatus } from '../update.js';
 import { httpError, parseDate, cleanText, todayISO } from '../util.js';
 import { normalizeLine, isEmptyLine, validateSheet, summarize, MACHINE_FIELDS, FIELD_LABELS } from '../sheets.js';
 
@@ -225,6 +227,11 @@ sheets.get('/home', requireUser, (req, res) => {
     extra.outstanding = balances.filter((b) => b > 0).reduce((s, b) => s + b, 0);
     extra.cheques_due = db.prepare(`SELECT COUNT(*) n FROM payments WHERE is_cheque = 1 AND cheque_status = 'pending' AND cancelled_at IS NULL AND cheque_due <= ?`)
       .get(todayISO(new Date(Date.now() + 7 * 86400000))).n;
+  }
+  if (can(req.user, 'settings.manage')) {
+    const b = backupStatus();
+    const u = updateStatus();
+    extra.system = { backup_stale: b.stale, backup_error: !!b.error, backup_copy_error: !!b.copy_error, update_available: u.available && u.installed };
   }
   if (can(req.user, 'deliveries.manage')) {
     extra.undelivered = db.prepare(`SELECT COUNT(*) n FROM lines l JOIN sheets s ON s.id = l.sheet_id WHERE s.status = 'confirmed' AND l.delivery_id IS NULL`).get().n;

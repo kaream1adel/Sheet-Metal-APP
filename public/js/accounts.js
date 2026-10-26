@@ -2,6 +2,7 @@
 import { h, toast, money, fmtDate, fmtNum, todayISO, formModal, confirmModal } from './ui.js';
 import { get, post, put, api } from './api.js';
 import { state } from './app.js';
+import { backupsCard, updateCard, autostartCard } from './system.js';
 
 const pill = (cls, text) => h('span', { class: `pill ${cls}` }, text);
 const chequeName = { pending: 'تحت التحصيل', cleared: 'اتصرف', bounced: 'رجع' };
@@ -248,7 +249,7 @@ export async function renderSettings(main) {
   const ok = h('span', { class: 'small muted' });
   const f = (name, label, value, type = 'text') => h('div', { class: 'field' }, h('label', {}, label),
     type === 'textarea' ? h('textarea', { name, rows: 6 }, value) : h('input', { name, type, value }));
-  const form = h('form', { class: 'card grid', style: 'max-width:520px', onsubmit: async (e) => {
+  const form = h('form', { class: 'card grid', style: 'align-content:start', onsubmit: async (e) => {
     e.preventDefault();
     const v = Object.fromEntries(new FormData(form));
     try { await put('/api/settings', v); ok.textContent = 'اتحفظ ✓'; toast('اتحفظ'); } catch (ex) { toast(ex.message, true); }
@@ -259,5 +260,9 @@ export async function renderSettings(main) {
   f('alert_days', 'نبهني لو عدى كام يوم من التسليم ومتدفعش', s.alert_days),
   f('payment_methods', 'طرق الدفع (كل طريقة في سطر — "شيك" بيتعامل كشيك)', s.payment_methods.join('\n'), 'textarea'),
   h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'submit' }, 'حفظ'), ok));
-  main.append(form);
+  const side = h('div', { class: 'grid', style: 'align-content:start' });
+  main.append(h('div', { class: 'settings-grid' }, form, side));
+  for (const make of [updateCard, backupsCard, autostartCard]) {
+    try { const card = await make(); if (card) side.append(card); } catch (ex) { side.append(h('div', { class: 'card muted' }, ex.message)); }
+  }
 }

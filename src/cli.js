@@ -1,4 +1,6 @@
-// Command line helpers.  node src/cli.js create-admin <username> <password> [display name]
+// Command line helpers.
+//   node src/cli.js create-admin <username> <password> [display name]
+//   node src/cli.js check-db <file>    open + migrate a copy of the data (used by the updater)
 import { openDb, getDb, closeDb } from './db.js';
 import { hashPassword, MIN_PASSWORD } from './auth.js';
 
@@ -22,7 +24,18 @@ if (cmd === 'create-admin') {
     console.log(`admin "${username}" created`);
   }
   closeDb();
+} else if (cmd === 'check-db') {
+  try {
+    openDb(username);
+    const ok = getDb().pragma('quick_check', { simple: true });
+    closeDb();
+    if (ok !== 'ok') throw new Error(`quick_check: ${ok}`);
+    console.log('ok');
+  } catch (err) {
+    console.error(err.message);
+    process.exit(1);
+  }
 } else {
-  console.error('commands: create-admin');
+  console.error('commands: create-admin, check-db');
   process.exit(1);
 }

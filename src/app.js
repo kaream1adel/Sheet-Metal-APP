@@ -9,8 +9,10 @@ import { sheets } from './routes/sheets.js';
 import { money } from './routes/money.js';
 import { deliveries } from './routes/deliveries.js';
 import { print } from './routes/print.js';
+import { system } from './routes/system.js';
+import { APP_VERSION } from './version.js';
 
-export const APP_VERSION = '0.1.0';
+export { APP_VERSION };
 
 export function createApp() {
   const app = express();
@@ -74,6 +76,7 @@ export function createApp() {
   app.use('/api', sheets);
   app.use('/api', money);
   app.use('/api', deliveries);
+  app.use('/api', system);
   app.use('/api', (_req, _res, next) => next(httpError(404, 'مش موجود')));
   app.use(print);
 

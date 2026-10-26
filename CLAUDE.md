@@ -30,9 +30,17 @@ src/auth.js          scrypt passwords, session cookie, lockout, requirePerm
 src/permissions.js   permission list + role defaults
 src/money.js         piastres, stripMoney
 src/sheets.js        machine columns + red/yellow validation
-src/routes/          people.js (users, clients, technicians, lookups), sheets.js
-public/js/           app.js (shell, router, simple screens), sheet.js (entry + review), ui.js, api.js
-test/core.test.js    npm test
+src/backup.js        backups (startup, daily, before update, manual), restore
+src/update.js        update button + rollback (GitHub releases → versions\<build>), crash recovery
+src/tunnel.js        cloudflared quick/fixed link, Wi-Fi links, QR codes
+src/windows.js       keep-awake, start with Windows      src/version.js  build number
+src/routes/          people.js (users, clients, technicians, lookups), sheets.js, money.js, deliveries.js,
+                     print.js, system.js (backups, update, share, autostart)
+public/js/           app.js (shell, router, simple screens), sheet.js (entry + review), ui.js, api.js,
+                     pricing.js, accounts.js, delivery.js, system.js (backups, update, مشاركة)
+test/                core, money, system (backups/update/rollback against a fake GitHub) — npm test
+.github/workflows/   release.yml: tests on every push; on main a Windows package + GitHub release
+scripts/             check-repo.js (no data in the public repo), package.js (builds the release)
 ```
 
 ## Running
@@ -45,10 +53,23 @@ node src/cli.js create-admin <user> <password>
 ```
 Set `SHEETMETAL_DATA` to use another data folder (tests use a temp dir).
 
+## Installed layout (Windows)
+
+```
+SheetMetal\Start Sheet Metal.bat   sets SHEETMETAL_HOME, loops: exit code 42 = restart
+SheetMetal\node\node.exe  cloudflared.exe          bundled, never in the repo
+SheetMetal\data\                                  database + backups\ (an update never touches it)
+SheetMetal\versions\<build>\  current.txt  previous.txt   code from the update button ("." = next to the .bat)
+```
+An update unpacks into `versions\<build>`, runs the new code's migrations on a copy of the data
+(`cli.js check-db`), then switches `current.txt`. If the new build fails to start, the launcher
+switches back by itself (`update-trial.txt`) and the old code restores the pre-update backup.
+The bundled `node\node.exe` must be the same major version as `NODE_VERSION` in release.yml.
+
 ## Build order (from the design doc)
 
 1. ✅ Core: schema, login/permissions, clients, technicians, machines, manual entry, review/confirm (no OCR).
 2. ✅ Pricing (price memory, bundles), statement/receipt/delivery print pages, payments + cheques, adjustments, promises, follow-up, settings.
-3. Update button + rollback, backups, tunnel + QR, phone layouts.
+3. ✅ Update button + rollback, backups, tunnel + QR, phone layouts (bottom bar, one-row sheet review).
 4. Printed forms with QR, photo upload, image prep + cell splitting.
 5. OCR v1 + teaching from old sheets.  6. Self-retraining, technician profiles.

@@ -45,3 +45,6 @@ export function todayISO(d = new Date()) {
 export function cleanText(v, max = 200) {
   return String(v ?? '').trim().slice(0, max);
 }
+
+// Express 4 doesn't catch errors from async handlers: pass them on to the error handler.
+export const asyncRoute = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
