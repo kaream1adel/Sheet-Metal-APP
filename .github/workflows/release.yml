@@ -1,18 +1,19 @@
-# Every push to main: tests, then (only if green) a Windows package that the app's
-# تحديث button downloads. Pull requests run the tests only.
+# Every push: tests, then (only if green) the Windows package + SheetMetal-Setup.exe,
+# downloadable from the run's "Artifacts". On main they are also published as a
+# GitHub release, which the app's تحديث button downloads. Pull requests run the tests only.
 name: test and release
 
 on:
   push:
-    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 env:
-  # Must match the major version of node\node.exe bundled on the workshop PC
-  # (the package carries native code built for it; the app refuses a mismatch).
+  # The installer bundles this Node; an update package built with another major
+  # version is refused by the app (native code must match node\node.exe).
   NODE_VERSION: '22'
 
 jobs:
@@ -29,9 +30,9 @@ jobs:
       - run: npm ci
       - run: npm test
 
-  release:
+  package:
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,16 +43,33 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm prune --omit=dev
-      - name: Build the package
+      - name: Build the update package and the installer files
         shell: bash
         env:
           BUILD: ${{ github.run_number }}
           COMMIT: ${{ github.sha }}
         run: node scripts/package.js
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+      - name: Build SheetMetal-Setup.exe
+        shell: pwsh
+        run: |
+          $v = Get-Content version.json | ConvertFrom-Json
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$($v.version)" "/DBuild=$($v.build)" installer\sheet-metal.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SheetMetal-Setup-${{ github.run_number }}
+          path: |
+            dist/SheetMetal-Setup.exe
+            dist/sheet-metal-win-x64.tar.gz
+            dist/manifest.json
+          retention-days: 30
       - name: Publish the release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "build-${{ github.run_number }}" dist/sheet-metal-win-x64.tar.gz dist/manifest.json \
+          gh release create "build-${{ github.run_number }}" dist/SheetMetal-Setup.exe dist/sheet-metal-win-x64.tar.gz dist/manifest.json \
             --title "Build ${{ github.run_number }}" --notes-file dist/notes.txt --latest

@@ -40,7 +40,9 @@ public/js/           app.js (shell, router, simple screens), sheet.js (entry + r
                      pricing.js, accounts.js, delivery.js, system.js (backups, update, مشاركة)
 test/                core, money, system (backups/update/rollback against a fake GitHub) — npm test
 .github/workflows/   release.yml: tests on every push; on main a Windows package + GitHub release
-scripts/             check-repo.js (no data in the public repo), package.js (builds the release)
+scripts/             check-repo.js (no data in the public repo), package.js (builds the release + installer files)
+installer/           sheet-metal.iss: Inno Setup → SheetMetal-Setup.exe (Node + cloudflared bundled, firewall,
+                     shortcuts, start with Windows). CI builds it on every push (run artifacts) and releases it from main.
 ```
 
 ## Running
@@ -54,6 +56,9 @@ node src/cli.js create-admin <user> <password>
 Set `SHEETMETAL_DATA` to use another data folder (tests use a temp dir).
 
 ## Installed layout (Windows)
+
+`SheetMetal-Setup.exe` installs to `C:\SheetMetal` and does the whole setup; re-running a newer one upgrades
+the code and never touches `data\` (uninstall keeps it too).
 
 ```
 SheetMetal\Start Sheet Metal.bat   sets SHEETMETAL_HOME, loops: exit code 42 = restart

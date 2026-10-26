@@ -8,7 +8,7 @@ import crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import express from 'express';
 import { startApp, client } from './helpers.js';
-import { setRestartHandler, PACKAGE_ASSET, UPDATE_REPO } from '../src/update.js';
+import { setRestartHandler, tarCommand, PACKAGE_ASSET, UPDATE_REPO } from '../src/update.js';
 import { openDb, getDb } from '../src/db.js';
 
 let app;
@@ -27,7 +27,7 @@ function makePackage(build, { migrationOk = true } = {}) {
   fs.writeFileSync(path.join(dir, 'src', 'server.js'), '// new server\n');
   fs.writeFileSync(path.join(dir, 'src', 'cli.js'), `process.exit(${migrationOk ? 0 : 1});\n`);
   const tarball = path.join(dir, 'pkg.tar.gz');
-  execFileSync('tar', ['-czf', tarball, '-C', dir, 'version.json', 'src']);
+  execFileSync(tarCommand(), ['-czf', tarball, '-C', dir, 'version.json', 'src']);
   const buf = fs.readFileSync(tarball);
   fs.rmSync(dir, { recursive: true, force: true });
   return { buf, manifest: { version: '0.2.0', build, sha256: crypto.createHash('sha256').update(buf).digest('hex'), size: buf.length, notes: 'تجربة' } };

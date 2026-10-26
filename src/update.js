@@ -110,6 +110,11 @@ export function updateStatus() {
 }
 
 // ---------- applying ----------
+
+// Windows' own tar.exe (10 and later): a GNU tar earlier on PATH (Git) misreads "C:\..." paths.
+export function tarCommand() {
+  return process.platform === 'win32' ? join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
+}
 async function download(url, dest, { sha256, size }) {
   const res = await fetch(url, { headers: { 'user-agent': HEADERS['user-agent'] }, signal: AbortSignal.timeout(10 * 60000) });
   if (!res.ok) throw httpError(502, 'التحميل وقف في النص. جرب تاني.');
@@ -159,8 +164,7 @@ export async function applyUpdate(userId) {
     await download(latest.url, tarball, latest);
     fs.rmSync(staging, { recursive: true, force: true });
     ensureDir(staging);
-    // tar.exe ships with Windows 10 and later.
-    const t = spawnSync('tar', ['-xzf', tarball, '-C', staging], { encoding: 'utf8', windowsHide: true });
+    const t = spawnSync(tarCommand(), ['-xzf', tarball, '-C', staging], { encoding: 'utf8', windowsHide: true });
     if (t.status !== 0) throw httpError(500, 'مقدرتش أفك ملف التحديث.');
     let unpacked;
     try { unpacked = JSON.parse(fs.readFileSync(join(staging, 'version.json'), 'utf8')); } catch { /* checked below */ }
