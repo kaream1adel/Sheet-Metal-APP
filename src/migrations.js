@@ -335,4 +335,24 @@ CREATE TABLE cell_reads (
 ALTER TABLE lines ADD COLUMN ditto_fields TEXT NOT NULL DEFAULT '[]';
 `,
   },
+  {
+    id: 5,
+    name: 'profiles-forget',
+    sql: `
+-- Problems found on each sheet while it was reviewed (first time seen), for the
+-- technician's "most frequent mistakes" report.
+CREATE TABLE sheet_issue_log (
+  sheet_id INTEGER NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+  issue_key TEXT NOT NULL,
+  code TEXT NOT NULL,
+  field TEXT NOT NULL,
+  level TEXT NOT NULL,
+  first_seen TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (sheet_id, issue_key)
+);
+
+-- 1 = the reader must not learn from this sheet (it taught something wrong).
+ALTER TABLE sheets ADD COLUMN no_teach INTEGER NOT NULL DEFAULT 0;
+`,
+  },
 ];

@@ -132,3 +132,17 @@ test('a practice sheet only teaches: kept as a lesson, never counted as work', a
   const forms = (await staff.get('/api/forms')).data;
   assert.ok(!forms.missing.some((m) => m.sheet_no === 2), 'its printed number is not "missing"');
 });
+
+test('an admin quantity fix makes the reader learn the sheet again; forget stops it for good', async () => {
+  const s = (await admin.get(`/api/sheets/${sheetId}`)).data.sheet;
+  assert.ok(!(await staff.get('/api/ocr/pending')).data.ids.includes(sheetId), 'learned already');
+  const r = await admin.patch(`/api/lines/${s.lines[0].id}`, { pieces: '6' });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.ok((await staff.get('/api/ocr/pending')).data.ids.includes(sheetId), 'to be learned again with the fixed value');
+  assert.equal((await staff.post('/api/ocr/forget', { sheet_id: sheetId })).status, 403, 'admin only');
+  assert.equal((await admin.post('/api/ocr/forget', { sheet_id: sheetId })).status, 200);
+  assert.ok(!(await staff.get('/api/ocr/pending')).data.ids.includes(sheetId));
+  const f = Buffer.alloc(147, 9).toString('base64');
+  assert.equal((await staff.post('/api/ocr/samples', { sheet_id: sheetId, feature_version: 1, samples: [{ type: 'digit', label: '4', features: f }] })).status, 409);
+  assert.ok(!(await admin.get('/api/ocr/sheets')).data.sheets.some((x) => x.id === sheetId));
+});

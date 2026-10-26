@@ -36,10 +36,13 @@ src/tunnel.js        cloudflared quick/fixed link, Wi-Fi links, QR codes
 src/windows.js       keep-awake, start with Windows      src/version.js  build number
 src/routes/          people.js (users, clients, technicians, lookups), sheets.js (+ photo upload), money.js,
                      deliveries.js, print.js, system.js (backups, update, share, autostart),
-                     forms.js (طباعة الورق: reserve numbers, printable SVG forms, missing sheets)
+                     forms.js (طباعة الورق: reserve numbers, printable SVG forms, missing sheets),
+                     ocr.js (reader examples, forget, accuracy), reports.js (الإنتاج, technician profile,
+                     income by month, machines/materials)
 public/js/           app.js (shell, router, simple screens), sheet.js (entry + review, photo strips), ui.js, api.js,
                      pricing.js, accounts.js, delivery.js, system.js (backups, update, مشاركة),
-                     scan.js (صوّر ورقة + طباعة الورق screens)
+                     scan.js (صوّر ورقة, طباعة الورق, القراءة الآلية), reports.js (الإنتاج, التقارير,
+                     technician profile, machines/materials + audit log cards in الإعدادات)
 public/js/forms.js   THE paper layouts in mm (shared by print, straightening, row/cell cutting). Never change a
                      shipped layout: add a FORM_VERSION (the QR carries it: "SM1:press:37").
 public/js/ocr.js     القراءة الآلية: empty cells, ~ and //, digits (blob per character, k-nearest-neighbours),
@@ -51,7 +54,7 @@ public/js/vision.js  photo → straight page: corner squares, QR picks the turn,
                      sharpness/light checks. Pure math, also runs in Node (test/vision.test.js).
 test/                core, money, system (backups/update/rollback against a fake GitHub), forms (printing,
                      photo upload), vision (synthetic tilted/shadowed/blurred photos), ocr (synthetic handwriting
-                     learn → read), ocr-api (reads, yellow issues, accuracy, lessons) — npm test
+                     learn → read), ocr-api (reads, yellow issues, accuracy, lessons, forget), reports — npm test
 .github/workflows/   release.yml: tests on every push; on main a Windows package + GitHub release
 scripts/             check-repo.js (no data in the public repo), package.js (builds the release + installer files)
 installer/           sheet-metal.iss: Inno Setup → SheetMetal-Setup.exe (Node + cloudflared bundled, firewall,
@@ -92,4 +95,6 @@ The bundled `node\node.exe` must be the same major version as `NODE_VERSION` in 
 4. ✅ Printed forms with QR, photo upload, image prep + cell splitting (photos in data\photos\; the
    sharpness threshold in vision.js still needs tuning on real phone photos).
 5. ✅ OCR v1 (learns from reviewed sheets; "تعليم البرنامج بس" practice sheets; no starter photos existed).
-6. Self-retraining, technician profiles.
+6. ✅ Learning is continuous (each confirm teaches; pending sheets learned in the background; an admin
+   quantity fix re-teaches; "انساها" forgets a sheet), technician profiles (usual clients/materials,
+   normal ranges, ~ habit, mistakes found in review), الإنتاج, التقارير, machines/materials, audit log.

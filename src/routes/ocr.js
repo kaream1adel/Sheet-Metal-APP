@@ -13,7 +13,7 @@ const MAX_SAMPLES = 3000;      // per sheet
 const MAX_FEATURE = 512;       // bytes
 
 // Sheets the reader may learn from: confirmed, or kept as a lesson, with a photo.
-const TEACHING = `s.photo_path IS NOT NULL AND (s.status = 'confirmed' OR (s.status = 'cancelled' AND s.cancel_reason = '${LESSON.replace(/'/g, "''")}'))`;
+const TEACHING = `s.photo_path IS NOT NULL AND s.no_teach = 0 AND (s.status = 'confirmed' OR (s.status = 'cancelled' AND s.cancel_reason = '${LESSON.replace(/'/g, "''")}'))`;
 
 // Everything the reader knows (current feature version only).
 ocr.get('/ocr/model', requirePerm('sheets.create'), (_req, res) => {
@@ -74,4 +74,26 @@ ocr.get('/ocr/stats', requirePerm('settings.manage'), (_req, res) => {
     FROM cell_reads WHERE finalized_at IS NOT NULL AND correct IS NOT NULL GROUP BY week, what ORDER BY week DESC, what`).all();
   const unread = db.prepare(`SELECT COUNT(*) n FROM cell_reads WHERE finalized_at IS NOT NULL AND kind = 'ink'`).get().n;
   res.json({ version: FEATURE_VERSION, sheets, lessons, samples, accuracy, unread });
+});
+
+// Sheets the reader learned from, newest first (to find one that taught it wrong).
+ocr.get('/ocr/sheets', requirePerm('settings.manage'), (_req, res) => {
+  const rows = getDb().prepare(`SELECT s.id, s.sheet_no, s.status, s.confirmed_at, s.cancelled_at, m.name AS machine_name, t.name AS technician_name,
+      (SELECT COUNT(*) FROM ocr_samples o WHERE o.sheet_id = s.id) AS samples
+    FROM sheets s JOIN machines m ON m.id = s.machine_id LEFT JOIN technicians t ON t.id = s.technician_id
+    WHERE ${TEACHING} ORDER BY s.id DESC LIMIT 100`).all();
+  res.json({ sheets: rows });
+});
+
+// انسى الورقة دي: its examples go, and it is never learned from again.
+ocr.post('/ocr/forget', requirePerm('settings.manage'), (req, res) => {
+  const db = getDb();
+  const s = db.prepare('SELECT id FROM sheets WHERE id = ?').get(req.body?.sheet_id);
+  if (!s) throw httpError(404, 'الورقة مش موجودة');
+  db.transaction(() => {
+    const n = db.prepare('DELETE FROM ocr_samples WHERE sheet_id = ?').run(s.id).changes;
+    db.prepare('UPDATE sheets SET no_teach = 1 WHERE id = ?').run(s.id);
+    audit(req.user.id, 'forget', 'sheet', s.id, { samples: n }, { no_teach: 1 });
+  })();
+  res.json({ ok: true });
 });

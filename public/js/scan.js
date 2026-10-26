@@ -5,7 +5,7 @@ import { get, post } from './api.js';
 import { go, state } from './app.js';
 import { processPhoto } from './vision.js';
 import { formLayout } from './forms.js';
-import { readPage, teachFrom } from './reader.js';
+import { readPage, teachPending } from './reader.js';
 
 const MAX_SIDE = 2400; // photos are scaled to this before processing
 
@@ -183,7 +183,7 @@ export async function renderPrintForms(main) {
 const WHAT = { number: 'الأرقام', client_id: 'العملاء', material_id: 'الخامات', material_source: 'الخامة من', ditto: '~ و //' };
 
 export async function renderReader(main) {
-  const [stats, pending] = await Promise.all([get('/api/ocr/stats'), get('/api/ocr/pending')]);
+  const [stats, pending, learned] = await Promise.all([get('/api/ocr/stats'), get('/api/ocr/pending'), get('/api/ocr/sheets')]);
   const count = (type, field, label) => stats.samples.filter((s) => s.type === type && (field === undefined || s.field === field) && (label === undefined || s.label === label))
     .reduce((n, s) => n + s.n, 0);
   const names = (field) => new Set(stats.samples.filter((s) => s.type === 'cell' && s.field === field).map((s) => s.label)).size;
@@ -193,15 +193,7 @@ export async function renderReader(main) {
 
   const teachBtn = h('button', { class: 'btn primary', disabled: !pending.ids.length, onclick: async () => {
     teachBtn.disabled = true;
-    let done = 0;
-    for (const id of pending.ids) {
-      teachBtn.textContent = `جاري التعليم… ${done}/${pending.ids.length}`;
-      try {
-        const { sheet } = await get(`/api/sheets/${id}`);
-        await teachFrom(sheet);
-      } catch (ex) { console.warn('teach', id, ex); }
-      done++;
-    }
+    await teachPending((done, n) => { teachBtn.textContent = `جاري التعليم… ${done}/${n}`; });
     toast('البرنامج اتعلم من الورق ✓');
     renderReader(main);
   } }, pending.ids.length ? `علّم البرنامج من الورق اللي فات (${pending.ids.length})` : 'البرنامج اتعلم من كل الورق المتأكد');
@@ -229,5 +221,17 @@ export async function renderReader(main) {
           h('td', { class: 'num' }, a.week), h('td', {}, WHAT[a.what] || a.what), h('td', { class: 'num' }, a.reads),
           h('td', { class: 'num' }, `${Math.round((a.correct / a.reads) * 100)}%`), h('td', { class: 'num' }, a.sure),
           h('td', { class: `num${a.sure_wrong ? ' owe-t' : ''}` }, a.sure_wrong)))))),
+    h('h2', { style: 'margin-top:20px' }, 'الورق اللي اتعلم منه'),
+    h('div', { class: 'small muted', style: 'margin-bottom:6px' }, 'لو ورقة اتأكدت وفيها غلط، البرنامج ممكن يكون اتعلم الغلط. "انساها" تشيلها من اللي اتعلمه.'),
+    learned.sheets.length === 0 ? h('div', { class: 'card muted' }, 'لسه ما اتعلمش من ولا ورقة.') : h('div', { class: 'table-wrap', style: 'max-height:320px;overflow:auto' }, h('table', {},
+      h('thead', {}, h('tr', {}, ['الورقة', 'الفني', 'أمثلة', ''].map((x) => h('th', {}, x)))),
+      h('tbody', {}, learned.sheets.map((x) => h('tr', {},
+        h('td', {}, h('a', { href: `#/sheets/${x.id}` }, `${x.machine_name} رقم ${x.sheet_no || x.id}`), x.status === 'cancelled' ? h('span', { class: 'small muted' }, ' (درس)') : null),
+        h('td', {}, x.technician_name || '—'), h('td', { class: 'num' }, x.samples),
+        h('td', {}, h('button', { class: 'btn sm danger', onclick: async () => {
+          await post('/api/ocr/forget', { sheet_id: x.id });
+          toast('البرنامج نسي الورقة دي');
+          renderReader(main);
+        } }, 'انساها'))))))),
     stats.unread ? h('div', { class: 'small muted', style: 'margin-top:8px' }, `${stats.unread} خانة فيها كتابة البرنامج كان لسه مش عارف يقراها (أغلبها قبل ما يتعلم).`) : null);
 }

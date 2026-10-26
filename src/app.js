@@ -12,6 +12,7 @@ import { print } from './routes/print.js';
 import { system } from './routes/system.js';
 import { forms } from './routes/forms.js';
 import { ocr } from './routes/ocr.js';
+import { reports } from './routes/reports.js';
 import { createRequire } from 'module';
 import { APP_VERSION } from './version.js';
 
@@ -83,6 +84,7 @@ export function createApp() {
   app.use('/api', deliveries);
   app.use('/api', system);
   app.use('/api', ocr);
+  app.use('/api', reports);
   app.use(forms);
   app.use('/api', (_req, _res, next) => next(httpError(404, 'مش موجود')));
   app.use(print);

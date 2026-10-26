@@ -7,6 +7,8 @@ import { renderClientPage, renderPayments, renderFollowup, renderSettings } from
 import { renderDeliveries } from './delivery.js';
 import { renderShare } from './system.js';
 import { renderScan, renderPrintForms, renderReader } from './scan.js';
+import { renderProduction, renderReports, renderTechnicianProfile } from './reports.js';
+import { teachPending } from './reader.js';
 
 export const state = { user: null, version: '', lookups: null, homeCounts: null };
 export const can = (perm) => !!state.user?.permissions.includes(perm);
@@ -26,6 +28,8 @@ async function boot() {
   state.user = s.user;
   await loadLookups();
   route();
+  // Reviewed photo sheets the reader hasn't learned from yet: learn them quietly.
+  if (can('sheets.review')) setTimeout(() => teachPending().catch(() => {}), 4000);
   const after = sessionStorage.getItem('after-restart');
   if (after) { sessionStorage.removeItem('after-restart'); toast(after); }
 }
@@ -89,6 +93,8 @@ const NAV = [
   { href: '#/deliveries', label: 'التسليم', perm: 'deliveries.manage', phone: true },
   { href: '#/payments', label: 'المدفوعات', perm: 'money.view' },
   { href: '#/followup', label: 'المتابعة', perm: 'money.view' },
+  { href: '#/production', label: 'الإنتاج', perm: 'production.view' },
+  { href: '#/reports', label: 'التقارير', perm: 'money.view' },
   { href: '#/clients', label: 'العملاء' },
   { href: '#/technicians', label: 'الفنيين' },
   { href: '#/users', label: 'المستخدمين', perm: 'users.manage' },
@@ -144,6 +150,9 @@ async function route() {
     else if (hash === '#/forms' && can('sheets.create')) await renderPrintForms(main);
     else if (hash === '#/ocr' && can('settings.manage')) await renderReader(main);
     else if (hash === '#/technicians') await renderTechnicians(main);
+    else if ((m = hash.match(/^#\/technicians\/(\d+)$/)) && can('production.view')) await renderTechnicianProfile(main, Number(m[1]));
+    else if (hash === '#/production' && can('production.view')) await renderProduction(main);
+    else if (hash === '#/reports' && can('money.view')) await renderReports(main);
     else if (hash === '#/users' && can('users.manage')) await renderUsers(main);
     else main.replaceChildren(h('h1', {}, 'الصفحة مش موجودة'));
   } catch (ex) {
@@ -289,10 +298,11 @@ async function renderTechnicians(main) {
       can('technicians.edit') ? h('button', { class: 'btn primary', onclick: () => edit(null) }, '+ فني جديد') : null),
     technicians.length === 0 ? h('div', { class: 'card muted' }, 'لسه مفيش فنيين.') :
       h('div', { class: 'table-wrap' }, h('table', {},
-        h('thead', {}, h('tr', {}, ['الاسم', 'الأرقام', 'الحالة'].map((x) => h('th', {}, x)))),
-        h('tbody', {}, technicians.map((t) => h('tr', { class: can('technicians.edit') ? 'click' : '', onclick: () => can('technicians.edit') && edit(t) },
+        h('thead', {}, h('tr', {}, ['الاسم', 'الأرقام', 'الحالة', ''].map((x) => h('th', {}, x)))),
+        h('tbody', {}, technicians.map((t) => h('tr', { class: can('production.view') ? 'click' : '', onclick: () => can('production.view') && go(`#/technicians/${t.id}`) },
           h('td', {}, t.name), h('td', {}, t.digit_system === 'arabic' ? 'عربي ١٢٣' : 'إنجليزي 123'),
-          h('td', {}, t.active ? 'شغال' : h('span', { class: 'muted' }, 'موقوف'))))))),
+          h('td', {}, t.active ? 'شغال' : h('span', { class: 'muted' }, 'موقوف')),
+          h('td', {}, can('technicians.edit') ? h('button', { class: 'btn sm', onclick: (e) => { e.stopPropagation(); edit(t); } }, 'تعديل') : null)))))),
   );
 }
 

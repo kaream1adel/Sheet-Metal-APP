@@ -3,6 +3,7 @@ import { h, toast, money, fmtDate, fmtNum, todayISO, formModal, confirmModal } f
 import { get, post, put, api } from './api.js';
 import { state } from './app.js';
 import { backupsCard, updateCard, autostartCard } from './system.js';
+import { machinesCard, auditCard } from './reports.js';
 
 const pill = (cls, text) => h('span', { class: `pill ${cls}` }, text);
 const chequeName = { pending: 'تحت التحصيل', cleared: 'اتصرف', bounced: 'رجع' };
@@ -262,7 +263,8 @@ export async function renderSettings(main) {
   h('div', { class: 'row' }, h('button', { class: 'btn primary', type: 'submit' }, 'حفظ'), ok));
   const side = h('div', { class: 'grid', style: 'align-content:start' });
   main.append(h('div', { class: 'settings-grid' }, form, side));
-  for (const make of [updateCard, backupsCard, autostartCard]) {
+  for (const make of [updateCard, backupsCard, autostartCard, machinesCard]) {
     try { const card = await make(); if (card) side.append(card); } catch (ex) { side.append(h('div', { class: 'card muted' }, ex.message)); }
   }
+  try { main.append(h('div', { style: 'margin-top:14px' }, await auditCard())); } catch { /* not critical */ }
 }

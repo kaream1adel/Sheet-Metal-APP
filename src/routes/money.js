@@ -237,6 +237,8 @@ money.patch('/lines/:id', admin, (req, res) => {
   db.transaction(() => {
     db.prepare(`UPDATE lines SET ${Object.keys(changes).map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(...Object.values(changes), line.id);
     audit(req.user.id, 'fix', 'line', line.id, Object.fromEntries(Object.keys(changes).map((k) => [k, line[k]])), changes);
+    // The reader learned this sheet with the old value: it learns it again (القراءة الآلية).
+    db.prepare('DELETE FROM ocr_samples WHERE sheet_id = ?').run(line.sheet_id);
   })();
   res.json({ ok: true });
 });

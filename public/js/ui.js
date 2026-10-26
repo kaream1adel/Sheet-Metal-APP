@@ -51,8 +51,7 @@ export function fmtDate(iso) {
 
 export const fmtNum = (n) => (n === null || n === undefined ? '' : String(Number(n.toFixed(3))));
 
-export function todayISO() {
-  const d = new Date();
+export function todayISO(d = new Date()) {
   const p = (n) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }

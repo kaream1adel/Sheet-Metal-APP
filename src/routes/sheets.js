@@ -58,7 +58,19 @@ function withIssues(s) {
     // The file name changes with every new photo, so the URL does too (no stale cache).
     photo = { url: `/api/sheets/${s.id}/photo?f=${encodeURIComponent(s.photo_path.split('/').pop())}`, form_version: meta.form_version || 1, quality: meta.quality, forced: !!meta.forced };
   }
+  if (s.status === 'review') logIssues(s.id, issues);
   return { ...s, status_name: STATUS_NAMES[s.status], fields: MACHINE_FIELDS[s.machine_code], issues, counts: summarize(issues), photo };
+}
+
+// Problems that say something about how the paper was filled (not about what the
+// reviewer still has to type, nor about the reader): kept for the technician profile.
+export const MISTAKE_CODES = ['mismatch', 'high', 'future', 'foreign', 'zero', 'neg', 'nan', 'invalid'];
+function logIssues(sheetId, issues) {
+  const ins = getDb().prepare('INSERT OR IGNORE INTO sheet_issue_log (sheet_id, issue_key, code, field, level) VALUES (?,?,?,?,?)');
+  for (const i of issues) {
+    const code = i.key.split(':').pop();
+    if (MISTAKE_CODES.includes(code)) ins.run(sheetId, i.key, code, i.field, i.level);
+  }
 }
 
 // Header + lines from a request body, checked against the database.

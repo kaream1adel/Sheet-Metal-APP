@@ -43,6 +43,22 @@ export async function readPage(page, layout, technicianId = null) {
   }
 }
 
+// Every reviewed photo sheet not learned yet (closed tab, admin quantity fix, new reader version).
+let teaching = null;
+export function teachPending(onProgress = () => {}) {
+  teaching ||= (async () => {
+    const { ids } = await get('/api/ocr/pending');
+    let done = 0;
+    for (const id of ids) {
+      onProgress(done, ids.length);
+      try { await teachFrom((await get(`/api/sheets/${id}`)).sheet); } catch (err) { console.warn('teach', id, err); }
+      done++;
+    }
+    return ids.length;
+  })().finally(() => { teaching = null; });
+  return teaching;
+}
+
 // A confirmed (or lesson) photo sheet → examples for the reader.
 export async function teachFrom(sheet) {
   if (!sheet?.photo) return 0;
