@@ -1,0 +1,19 @@
+{
+  "name": "sheet-metal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sheet Metal (شركة الصفا) — offline Arabic workshop app: technician sheets, review, pricing and client accounts.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/core.test.js",
+    "create-admin": "node src/cli.js create-admin"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.5.0",
+    "express": "^4.21.1"
+  }
+}

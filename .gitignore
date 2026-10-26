@@ -1,0 +1,17 @@
+# Data never goes into the repo (the repo is public).
+data/
+backups/
+*.sqlite
+*.sqlite-*
+*.db
+
+# Runtime / bundled tools
+node_modules/
+node/
+cloudflared.exe
+config.bat
+.env
+
+# OS / editor
+.DS_Store
+Thumbs.db
