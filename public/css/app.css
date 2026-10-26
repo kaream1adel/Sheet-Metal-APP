@@ -256,5 +256,6 @@ td.ocr-ink { background: repeating-linear-gradient(135deg, transparent 0 6px, rg
   table.lines td.rn::before { content: "سطر "; }
   .table-wrap.lines-wrap { border: 0; background: none; }
   .pricing-wrap { flex-direction: column; }
+  .pricing-wrap > * { min-width: 0; max-width: 100%; }
   .pricing-wrap > .card { width: 100%; display: flex; overflow-x: auto; gap: 4px; }
 }

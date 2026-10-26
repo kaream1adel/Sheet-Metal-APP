@@ -176,7 +176,7 @@ const ENTITY = { sheet: 'ورقة', line: 'سطر', client: 'عميل', technici
 
 export async function auditCard() {
   const { audit } = await get('/api/audit');
-  const short = (j) => (j ? j.replace(/[{}"]/g, ' ').replace(/\s+/g, ' ').slice(0, 140) : '');
+  const short = (j) => (j ? j.replace(/\bnull\b/g, '—').replace(/[{}"]/g, ' ').replace(/\s+/g, ' ').slice(0, 140) : '');
   return h('div', { class: 'card grid' },
     h('h2', {}, 'سجل التعديلات (آخر 200)'),
     h('div', { class: 'table-wrap', style: 'max-height:360px;overflow:auto' }, h('table', {},
