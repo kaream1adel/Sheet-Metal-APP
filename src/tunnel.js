@@ -1,13 +1,15 @@
 // Phone access from anywhere: a Cloudflare tunnel publishes the app over HTTPS.
 // Without a token it is a free "quick" link that changes when the PC restarts;
 // with a token from a free Cloudflare account it is a fixed link (tunnel_url).
-// cloudflared.exe sits next to the launcher; it is bundled, not in the repo.
+// cloudflared.exe sits next to the launcher. If it is missing the app downloads it
+// from Cloudflare's GitHub releases by itself, so the link just appears.
 import fs from 'fs';
 import os from 'os';
 import { join } from 'path';
 import { spawn } from 'child_process';
 import QRCode from 'qrcode';
 import { homeDir, ROOT } from './paths.js';
+import { httpError } from './util.js';
 import { getSettings } from './settings.js';
 
 const QUICK_URL = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
@@ -25,6 +27,34 @@ export function cloudflaredPath() {
   return null;
 }
 
+// The official build for this PC, or null where there is no single-file build (macOS).
+function downloadUrl() {
+  if (process.env.SHEETMETAL_CLOUDFLARED_URL) return process.env.SHEETMETAL_CLOUDFLARED_URL;
+  const arch = { x64: 'amd64', ia32: '386', arm64: 'arm64' }[process.arch];
+  const os_ = { win32: 'windows', linux: 'linux' }[process.platform];
+  if (!arch || !os_) return null;
+  return `https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-${os_}-${arch}${os_ === 'windows' ? '.exe' : ''}`;
+}
+
+let downloading = null;
+async function downloadCloudflared() {
+  const url = downloadUrl();
+  if (!url) throw httpError(409, 'التحميل التلقائي مش متاح على الجهاز ده');
+  const dest = join(homeDir() || ROOT, process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared');
+  const part = `${dest}.part`;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(5 * 60000) });
+    if (!res.ok) throw new Error(`download ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length < 1_000_000) throw new Error('download too small');
+    fs.writeFileSync(part, buf, { mode: 0o755 });
+    fs.renameSync(part, dest);
+    return dest;
+  } finally {
+    fs.rmSync(part, { force: true });
+  }
+}
+
 export function startTunnel(port) {
   tunnel.port = port;
   stopTunnel();
@@ -32,7 +62,19 @@ export function startTunnel(port) {
   if (!s.tunnel_enabled) return;
   const bin = cloudflaredPath();
   if (!bin) {
-    tunnel.state = 'missing';
+    if (downloading) return;
+    tunnel.state = 'downloading';
+    tunnel.error = null;
+    downloading = downloadCloudflared()
+      .then(() => { downloading = null; startTunnel(port); })
+      .catch((err) => {
+        downloading = null;
+        tunnel.state = 'missing';
+        tunnel.error = `مقدرتش أحمّل cloudflared: ${err.message}`;
+        // No internet yet (PC just booted?): try again in a few minutes.
+        tunnel.timer = setTimeout(() => startTunnel(port), 10 * RETRY_MS);
+        tunnel.timer.unref();
+      });
     return;
   }
   tunnel.wanted = true;

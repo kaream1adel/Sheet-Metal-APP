@@ -151,7 +151,7 @@ export async function renderShare(main) {
   const copy = (url) => h('button', { class: 'btn sm', onclick: async () => {
     try { await navigator.clipboard.writeText(url); toast('اتنسخ'); } catch { toast('انسخه بإيدك', true); }
   } }, 'نسخ');
-  const STATE = { on: 'شغال', starting: 'بيتصل…', error: 'فيه مشكلة', off: 'مقفول', missing: 'cloudflared.exe مش موجود' };
+  const STATE = { on: 'شغال', starting: 'بيتصل…', downloading: 'بيجهز اللينك لأول مرة…', error: 'فيه مشكلة', off: 'مقفول', missing: 'مقدرش يجهز اللينك' };
 
   const internet = h('div', { class: 'card grid share' },
     h('h2', {}, 'من أي مكان (إنترنت)'),
@@ -161,7 +161,7 @@ export async function renderShare(main) {
       h('div', { class: 'row' }, h('a', { href: t.url, target: '_blank', class: 'num', style: 'word-break:break-all' }, t.url), copy(t.url)),
       !t.fixed ? h('div', { class: 'small muted' }, 'اللينك ده بيتغير كل ما الكمبيوتر يعيد تشغيل — ارجع للصفحة دي تاخد الجديد.') : null,
     ] : null,
-    t.state === 'missing' ? h('div', { class: 'small muted' }, 'حط ملف cloudflared.exe جنب "Start Sheet Metal.bat" وشغل البرنامج تاني.') : null,
+    t.state === 'missing' ? h('div', { class: 'small muted' }, 'اتأكد إن النت شغال ودوس "اتصل من جديد".') : null,
     t.error && t.state !== 'on' ? h('div', { class: 'small muted num' }, t.error) : null,
     h('div', { class: 'row' }, h('button', { class: 'btn', onclick: async () => {
       await post('/api/share/restart'); toast('بيتصل من جديد…'); setTimeout(() => renderShare(main), 6000);
