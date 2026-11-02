@@ -1,182 +1,146 @@
-// الإنتاج (work done, no money), the technician profile, income by month (admin),
-// and the machines / materials lists. Only confirmed sheets count as work.
+// Module reports (التقارير والرئيسية) — mounted at /api/reports in src/app.js.
+//
+//   GET  /home                     المركز المالي (money.view)
+//   GET  /clients  /clients.xlsx   ملخص العملاء (reports + money.view)
+//   GET  /aging                    أعمار الديون (reports + money.view)
+//   GET  /profit                   مكسب الشهر (reports + money.view)
+//   GET  /cashflow                 التدفق المتوقع (reports + money.view)
+//   GET  /partners                 جاري الشركاء (reports + money.view)
+//   GET  /production               الإنتاج — quantities only (reports or operations.*)
+//   GET  /audit  /audit/filters    سجل التعديلات (reports; money and free text removed without money.view)
+//   GET/POST/PATCH/DELETE /followups, POST /followups/:id/done   متابعة التحصيل (reports)
+//
+// Nothing here posts to the ledger: reports read it. Every response passes stripMoney().
+// ?as_of=YYYY-MM-DD (a real calendar date) moves "today" for the date-based reports.
 import { Router } from 'express';
-import { getDb, audit } from '../db.js';
-import { requirePerm } from '../auth.js';
-import { entries } from '../ledger.js';
-import { httpError, cleanText, parseDate, parseNumber, todayISO } from '../util.js';
-import { MACHINE_FIELDS } from '../sheets.js';
-import { MISTAKE_CODES } from './sheets.js';
+import { requirePerm, requireAny } from '../auth.js';
+import { stripMoney } from '../money.js';
+import { httpError, asyncRoute } from '../util.js';
+import { MACHINES } from '../ledger.js';
+import { dateParam, monthParam, today } from '../reports/dates.js';
+import { clientsSummary, aging, clientDebtAge, lastPayment } from '../reports/clients.js';
+import { financialPosition, chequesDue, needsAttention, homeCounters } from '../reports/position.js';
+import { monthProfit, profitSeries } from '../reports/profit.js';
+import { expectedCashflow } from '../reports/cashflow.js';
+import { partnersReport } from '../reports/partners.js';
+import { productionReport, GROUPS } from '../reports/production.js';
+import { auditEntries, auditFilters } from '../reports/audit.js';
+import { listFollowUps, createFollowUp, updateFollowUp, completeFollowUp, deleteFollowUp } from '../reports/followups.js';
+import { clientsSummaryWorkbook } from '../reports/excel.js';
+import { can } from '../permissions.js';
+import { getDb } from '../db.js';
 
 export const reports = Router();
 
-const DATE = 'COALESCE(l.work_date, s.sheet_date, date(s.created_at))';
-// Day / ISO-ish week (starting Saturday, as the workshop counts) / month.
-const PERIOD = {
-  day: DATE,
-  week: `date(${DATE}, '-' || ((strftime('%w', ${DATE}) + 1) % 7) || ' days')`,
-  month: `strftime('%Y-%m', ${DATE})`,
+const money = [requirePerm('reports'), requirePerm('money.view')];
+const asOf = (req) => dateParam(req.query.as_of, 'التاريخ', today(), 'as_of');
+const send = (req, res, data) => res.json(stripMoney(req.user, data));
+const idParam = (v, label = 'رقم') => {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  if (!Number.isSafeInteger(n) || n <= 0) throw httpError(400, `${label} غلط`);
+  return n;
 };
 
-function range(q) {
-  const to = parseDate(q.to) || todayISO();
-  const from = parseDate(q.from) || todayISO(new Date(Date.parse(to) - 29 * 86400000));
-  if (from > to) throw httpError(400, 'تاريخ البداية بعد تاريخ النهاية');
-  return { from, to };
-}
-
-// Quantities per period × technician × machine, in each machine's own units.
-export function production({ from, to, group = 'day', technicianId = null, machineId = null }) {
-  return getDb().prepare(`
-    SELECT ${PERIOD[group] || PERIOD.day} AS period, s.technician_id, t.name AS technician_name, m.id AS machine_id, m.code AS machine_code, m.name AS machine_name,
-      COUNT(*) AS lines, COUNT(DISTINCT s.id) AS sheets_count,
-      SUM(COALESCE(l.pieces, 0)) AS pieces,
-      SUM(COALESCE(l.pieces, 0) * COALESCE(l.ops_per_piece, 0)) AS ops,
-      SUM(COALESCE(l.sheets, 0)) AS sheets,
-      SUM(CASE WHEN m.code = 'laser' THEN COALESCE(l.sheets, 0) * COALESCE(l.minutes_per_sheet, 0) ELSE COALESCE(l.minutes, 0) END) AS minutes,
-      SUM(COALESCE(l.pieces, 0) * COALESCE(l.hits_per_piece, 0)) AS hits,
-      SUM(COALESCE(l.pieces, 0) * COALESCE(l.louvers_per_piece, 0)) AS louvers
-    FROM lines l JOIN sheets s ON s.id = l.sheet_id JOIN machines m ON m.id = s.machine_id
-    LEFT JOIN technicians t ON t.id = s.technician_id
-    WHERE s.status = 'confirmed' AND ${DATE} BETWEEN ? AND ?
-      AND (? IS NULL OR s.technician_id = ?) AND (? IS NULL OR m.id = ?)
-    GROUP BY period, s.technician_id, m.id
-    ORDER BY period DESC, m.sort, technician_name`).all(from, to, technicianId, technicianId, machineId, machineId);
-}
-
-reports.get('/production', requirePerm('production.view'), (req, res) => {
-  const { from, to } = range(req.query);
-  const group = ['day', 'week', 'month'].includes(req.query.group) ? req.query.group : 'day';
-  res.json({ from, to, group, rows: production({ from, to, group,
-    technicianId: req.query.technician ? Number(req.query.technician) : null, machineId: req.query.machine ? Number(req.query.machine) : null }) });
-});
-
-// ---------- technician profile ----------
-const pct = (sorted, p) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] : null);
-
-reports.get('/technicians/:id/profile', requirePerm('production.view'), (req, res) => {
-  const db = getDb();
-  const t = db.prepare('SELECT * FROM technicians WHERE id = ?').get(req.params.id);
-  if (!t) throw httpError(404, 'الفني مش موجود');
-  const since = todayISO(new Date(Date.now() - 180 * 86400000));
-  const lines = db.prepare(`SELECT l.*, m.code AS machine_code FROM lines l JOIN sheets s ON s.id = l.sheet_id JOIN machines m ON m.id = s.machine_id
-    WHERE s.status = 'confirmed' AND s.technician_id = ? AND ${DATE} >= ?`).all(t.id, since);
-  const top = (key, table) => {
-    const counts = {};
-    for (const l of lines) if (l[key]) counts[l[key]] = (counts[l[key]] || 0) + 1;
-    const name = db.prepare(`SELECT name FROM ${table} WHERE id = ?`);
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([id, n]) => ({ id: Number(id), name: name.get(id)?.name || '—', lines: n }));
-  };
-  // The normal range of each value he writes (10%–90%): outside it is worth a second look.
-  const ranges = {};
-  for (const f of ['thickness', 'pieces', 'ops_per_piece', 'sheets', 'minutes_per_sheet', 'pieces_per_sheet', 'hits_per_piece', 'minutes']) {
-    const v = lines.map((l) => l[f]).filter((x) => x !== null && x !== undefined).sort((a, b) => a - b);
-    if (v.length >= 3) ranges[f] = { low: pct(v, 0.1), usual: pct(v, 0.5), high: pct(v, 0.9), count: v.length };
-  }
-  const withDitto = lines.filter((l) => { try { return JSON.parse(l.ditto_fields || '[]').length > 0; } catch { return false; } }).length;
-  const mistakes = db.prepare(`SELECT g.code, g.field, COUNT(*) n FROM sheet_issue_log g JOIN sheets s ON s.id = g.sheet_id
-    WHERE s.technician_id = ? AND s.status = 'confirmed' AND g.first_seen >= ? AND g.code IN (${MISTAKE_CODES.map(() => '?').join(',')})
-    GROUP BY g.code, g.field ORDER BY n DESC`).all(t.id, since, ...MISTAKE_CODES);
-  const sheets = db.prepare(`SELECT COUNT(*) n FROM sheets s WHERE s.technician_id = ? AND s.status = 'confirmed' AND COALESCE(s.sheet_date, date(s.created_at)) >= ?`).get(t.id, since).n;
-  const reading = db.prepare(`SELECT COUNT(*) reads, SUM(r.correct) correct FROM cell_reads r JOIN sheets s ON s.id = r.sheet_id
-    WHERE s.technician_id = ? AND r.correct IS NOT NULL`).get(t.id);
-  const samples = db.prepare('SELECT COUNT(*) n FROM ocr_samples WHERE technician_id = ?').get(t.id).n;
-  const to = todayISO();
-  const from = todayISO(new Date(Date.now() - 29 * 86400000));
-  res.json({
-    technician: { ...t, active: !!t.active },
-    since, sheets, lines: lines.length,
-    clients: top('client_id', 'clients'), materials: top('material_id', 'materials'),
-    ranges, ditto_share: lines.length ? withDitto / lines.length : 0,
-    mistakes, reading: { reads: reading.reads || 0, correct: reading.correct || 0, samples },
-    production: production({ from, to, group: 'month', technicianId: t.id }),
+// ---------- الرئيسية: المركز المالي ----------
+reports.get('/home', requirePerm('money.view'), (req, res) => {
+  const d = asOf(req);
+  send(req, res, {
+    as_of: d,
+    position: financialPosition(d),
+    cheques_due: chequesDue(d, 7),
+    counters: homeCounters(d),
+    attention: needsAttention(d),
+    follow_ups_due: can(req.user, 'reports') ? listFollowUps(req.user, { status: 'due', asOf: d }).slice(0, 6) : [],
   });
 });
 
-// ---------- income by month (admin) ----------
-reports.get('/reports/income', requirePerm('money.view'), (req, res) => {
-  const db = getDb();
-  const { from, to } = range({ from: req.query.from || `${todayISO().slice(0, 4)}-01-01`, to: req.query.to });
-  const months = {};
-  const row = (m) => (months[m] ||= { month: m, work: 0, additions: 0, discounts: 0, received: 0 });
-  for (const { id } of db.prepare('SELECT id FROM clients').all()) {
-    for (const e of entries(id)) {
-      if (e.kind === 'opening' || e.date < from || e.date > to) continue;
-      const r = row(e.date.slice(0, 7));
-      if (e.kind === 'charge' || e.kind === 'item') r.work += e.amount;
-      else if (e.kind === 'adjustment') { if (e.amount > 0) r.additions += e.amount; else r.discounts -= e.amount; }
-      else if (e.kind === 'payment') r.received -= e.amount;
-    }
+// ---------- ملخص العملاء ----------
+reports.get('/clients', ...money, (req, res) => {
+  send(req, res, clientsSummary({ asOf: asOf(req), includeInactive: req.query.active_only !== '1' }));
+});
+
+reports.get('/clients.xlsx', ...money, asyncRoute(async (req, res) => {
+  const d = asOf(req);
+  const buf = await clientsSummaryWorkbook(clientsSummary({ asOf: d, includeInactive: req.query.active_only !== '1' }));
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="clients-summary-${d}.xlsx"; filename*=UTF-8''${encodeURIComponent(`ملخص العملاء ${d}.xlsx`)}`);
+  res.send(Buffer.from(buf));
+}));
+
+// ---------- أعمار الديون ----------
+reports.get('/aging', ...money, (req, res) => send(req, res, aging({ asOf: asOf(req) })));
+
+// ---------- مكسب الشهر ----------
+reports.get('/profit', ...money, (req, res) => {
+  const month = monthParam(req.query.month, today().slice(0, 7));
+  const n = Math.min(Math.max(Number(req.query.months) || 6, 1), 24);
+  send(req, res, { ...monthProfit(month), series: profitSeries(month, n) });
+});
+
+// ---------- التدفق المتوقع ----------
+reports.get('/cashflow', ...money, (req, res) => send(req, res, expectedCashflow(asOf(req), 4)));
+
+// ---------- جاري الشركاء ----------
+reports.get('/partners', ...money, (req, res) => send(req, res, partnersReport()));
+
+// ---------- الإنتاج (no money: the workshop manager sees it) ----------
+reports.get('/production', requireAny('reports', 'operations.record', 'operations.approve'), (req, res) => {
+  const from = dateParam(req.query.from, 'تاريخ البداية', null, 'from');
+  const to = dateParam(req.query.to, 'تاريخ النهاية', null, 'to');
+  if (from && to && from > to) throw httpError(400, 'تاريخ البداية بعد تاريخ النهاية', { field: 'from' });
+  const group = req.query.group || 'machine';
+  if (!(group in GROUPS)) throw httpError(400, 'اختار التجميع: المكنة، الفني، العميل أو الشهر');
+  const machine = req.query.machine || null;
+  if (machine && !MACHINES.includes(machine)) throw httpError(400, 'المكنة غلط');
+  send(req, res, productionReport({ from, to, group, machine,
+    technicianId: idParam(req.query.technician_id, 'الفني'), clientId: idParam(req.query.client_id, 'العميل') }));
+});
+
+// ---------- سجل التعديلات ----------
+reports.get('/audit/filters', requirePerm('reports'), (req, res) => send(req, res, auditFilters(req.user)));
+reports.get('/audit', requirePerm('reports'), (req, res) => {
+  const from = dateParam(req.query.from, 'تاريخ البداية', null, 'from');
+  const to = dateParam(req.query.to, 'تاريخ النهاية', null, 'to');
+  if (from && to && from > to) throw httpError(400, 'تاريخ البداية بعد تاريخ النهاية', { field: 'from' });
+  send(req, res, auditEntries(req.user, {
+    from, to, userId: idParam(req.query.user_id, 'المستخدم'), entity: req.query.entity || null, action: req.query.action || null,
+    entityId: idParam(req.query.entity_id), q: req.query.q ? String(req.query.q).slice(0, 80) : null,
+    beforeId: idParam(req.query.before_id), limit: req.query.limit,
+  }));
+});
+
+// ---------- متابعة التحصيل ----------
+const STATUSES = new Set(['due', 'open', 'done', 'all']);
+reports.get('/followups', requirePerm('reports'), (req, res) => {
+  const status = req.query.status || 'open';
+  if (!STATUSES.has(status)) throw httpError(400, 'الحالة غلط');
+  const d = asOf(req);
+  const partyId = idParam(req.query.party_id, 'الطرف');
+  const out = { as_of: d, follow_ups: listFollowUps(req.user, { status, partyId, asOf: d }) };
+  // The client file's tab: his balance, last payment and debt age next to the notes.
+  if (partyId && can(req.user, 'money.view')) {
+    const p = getDb().prepare('SELECT kind FROM parties WHERE id = ?').get(partyId);
+    if (p?.kind === 'client') out.summary = { ...lastPayment(partyId, d), ...clientDebtAge(partyId, d) };
   }
-  const rows = Object.values(months).sort((a, b) => b.month.localeCompare(a.month));
-  const sum = (k) => rows.reduce((s, r) => s + r[k], 0);
-  const pending = db.prepare(`SELECT COALESCE(SUM(amount), 0) n FROM payments WHERE is_cheque = 1 AND cheque_status = 'pending' AND cancelled_at IS NULL`).get().n;
-  res.json({ from, to, rows, totals: { work: sum('work'), additions: sum('additions'), discounts: sum('discounts'), received: sum('received') }, cheques_pending: pending });
+  send(req, res, out);
 });
 
-// ---------- machines and materials ----------
-reports.get('/materials', requirePerm('machines.edit'), (_req, res) => {
-  const rows = getDb().prepare('SELECT * FROM materials ORDER BY active DESC, sort, name').all();
-  res.json({ materials: rows.map((m) => ({ ...m, aliases: JSON.parse(m.aliases || '[]'), active: !!m.active })) });
+reports.post('/followups', requirePerm('reports'), (req, res) => {
+  res.status(201);
+  send(req, res, { follow_up: createFollowUp(req.user, req.body || {}) });
 });
 
-function materialInput(b, cur = {}) {
-  const m = {
-    name: b.name !== undefined ? cleanText(b.name, 40) : cur.name,
-    aliases: b.aliases !== undefined
-      ? [...new Set((Array.isArray(b.aliases) ? b.aliases : String(b.aliases).split(/[\n,،]/)).map((x) => cleanText(x, 40)).filter(Boolean))]
-      : JSON.parse(cur.aliases || '[]'),
-    density: b.density !== undefined ? parseNumber(b.density) : cur.density,
-    active: b.active !== undefined ? (b.active ? 1 : 0) : cur.active ?? 1,
-  };
-  if (!m.name) throw httpError(400, 'اكتب اسم الخامة');
-  if (m.density === null || m.density === undefined) m.density = 0;
-  if (Number.isNaN(m.density) || m.density < 0 || m.density >= 25) throw httpError(400, 'الكثافة غلط (الحديد 7.85)');
-  return m;
-}
-
-reports.post('/materials', requirePerm('machines.edit'), (req, res) => {
-  const db = getDb();
-  const m = materialInput(req.body || {});
-  if (db.prepare('SELECT 1 FROM materials WHERE name = ?').get(m.name)) throw httpError(409, 'الخامة دي موجودة');
-  const id = db.transaction(() => {
-    const sort = db.prepare('SELECT COALESCE(MAX(sort), 0) + 1 n FROM materials').get().n;
-    const r = db.prepare('INSERT INTO materials (name, aliases, density, sort, active) VALUES (?,?,?,?,?)').run(m.name, JSON.stringify(m.aliases), m.density, sort, m.active);
-    audit(req.user.id, 'create', 'material', r.lastInsertRowid, undefined, m);
-    return r.lastInsertRowid;
-  })();
-  res.status(201).json({ material: db.prepare('SELECT * FROM materials WHERE id = ?').get(id) });
+reports.patch('/followups/:id', requirePerm('reports'), (req, res) => {
+  send(req, res, { follow_up: updateFollowUp(req.user, req.params.id, req.body || {}) });
 });
 
-reports.patch('/materials/:id', requirePerm('machines.edit'), (req, res) => {
-  const db = getDb();
-  const cur = db.prepare('SELECT * FROM materials WHERE id = ?').get(req.params.id);
-  if (!cur) throw httpError(404, 'الخامة مش موجودة');
-  const m = materialInput(req.body || {}, cur);
-  if (m.name !== cur.name && db.prepare('SELECT 1 FROM materials WHERE name = ? AND id <> ?').get(m.name, cur.id)) throw httpError(409, 'فيه خامة بنفس الاسم');
-  db.transaction(() => {
-    db.prepare('UPDATE materials SET name = ?, aliases = ?, density = ?, active = ? WHERE id = ?').run(m.name, JSON.stringify(m.aliases), m.density, m.active, cur.id);
-    audit(req.user.id, 'update', 'material', cur.id, cur, m);
-  })();
-  res.json({ ok: true });
+reports.post('/followups/:id/done', requirePerm('reports'), (req, res) => {
+  send(req, res, completeFollowUp(req.user, req.params.id, req.body || {}));
 });
 
-reports.get('/machines', requirePerm('machines.edit'), (_req, res) => {
-  const rows = getDb().prepare('SELECT * FROM machines ORDER BY sort').all();
-  res.json({ machines: rows.map((m) => ({ ...m, active: !!m.active, fields: MACHINE_FIELDS[m.code] || [] })) });
+reports.delete('/followups/:id', requirePerm('reports'), (req, res) => {
+  send(req, res, { deleted: deleteFollowUp(req.user, req.params.id) });
 });
 
-// Only the name people see and whether it is in use: the code ties a machine to its paper form.
-reports.patch('/machines/:id', requirePerm('machines.edit'), (req, res) => {
-  const db = getDb();
-  const cur = db.prepare('SELECT * FROM machines WHERE id = ?').get(req.params.id);
-  if (!cur) throw httpError(404, 'المكنة مش موجودة');
-  const name = req.body?.name !== undefined ? cleanText(req.body.name, 40) : cur.name;
-  const active = req.body?.active !== undefined ? (req.body.active ? 1 : 0) : cur.active;
-  if (!name) throw httpError(400, 'اكتب اسم المكنة');
-  db.transaction(() => {
-    db.prepare('UPDATE machines SET name = ?, active = ? WHERE id = ?').run(name, active, cur.id);
-    audit(req.user.id, 'update', 'machine', cur.id, { name: cur.name, active: cur.active }, { name, active });
-  })();
-  res.json({ ok: true });
-});
+reports.use((_req, _res, next) => next(httpError(404, 'التقرير ده مش موجود')));

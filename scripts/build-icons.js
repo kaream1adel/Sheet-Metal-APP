@@ -2,12 +2,24 @@
 // uses, inlined so they work offline and take the text colour. Run: node scripts/build-icons.js
 import fs from 'fs';
 
-const NAMES = ['house', 'camera', 'files', 'file-text', 'printer', 'images', 'tag', 'truck', 'wallet', 'receipt',
-  'chart-line-up', 'factory', 'users-three', 'hard-hat', 'user-gear', 'scan', 'sparkle', 'share-network', 'gear-six',
-  'sign-out', 'dots-three-outline', 'magnifying-glass', 'plus', 'check', 'check-circle', 'warning', 'warning-circle',
-  'x', 'arrow-left', 'caret-left', 'clock', 'trash', 'copy', 'cloud-arrow-up', 'download-simple', 'arrow-counter-clockwise',
-  'eye', 'pencil-simple', 'calendar-blank', 'coins', 'hand-coins', 'package', 'list-checks', 'keyboard', 'image', 'info',
-  'arrows-clockwise', 'qr-code', 'chart-bar', 'bank', 'flow-arrow', 'lightning'];
+const NAMES = [
+  // menu
+  'house', 'files', 'file-plus', 'camera', 'seal-check', 'clipboard-text', 'factory', 'users-three', 'tag', 'table',
+  'vault', 'receipt', 'hand-coins', 'arrows-left-right', 'calculator', 'wallet', 'repeat', 'bank', 'signature',
+  'truck', 'handshake', 'hard-hat', 'chart-line-up', 'hourglass-medium', 'trend-up', 'calendar-blank',
+  'clock-counter-clockwise', 'gear-six', 'user-gear', 'cloud-arrow-up', 'arrows-clockwise', 'share-network',
+  'lock-key', 'lock-key-open', 'sparkle', 'file-xls', 'cube', 'list-bullets', 'scales', 'notebook',
+  // actions and states
+  'plus', 'check', 'check-circle', 'warning', 'warning-circle', 'x', 'arrow-right', 'arrow-left', 'caret-left',
+  'caret-down', 'trash', 'copy', 'download-simple', 'arrow-counter-clockwise', 'eye', 'pencil-simple',
+  'magnifying-glass', 'printer', 'sign-out', 'dots-three-outline', 'circle-notch', 'info', 'funnel', 'qr-code',
+  'hammer', 'user-plus', 'money', 'identification-card', 'phone',
+  // module operations
+  'image', 'images', 'upload-simple', 'magnifying-glass-plus', 'magnifying-glass-minus', 'x-circle', 'prohibit',
+  'pencil-line', 'list-checks', 'clock', 'paper-plane-tilt', 'caret-right', 'arrow-square-out', 'note-pencil', 'user',
+  // treasury (image, prohibit, x-circle are above)
+  'paperclip', 'arrow-down-left', 'arrow-up-right', 'bell-ringing', 'share-fat', 'coins',
+  'calendar-check', 'arrow-u-up-left'];
 const dir = 'node_modules/@phosphor-icons/core/assets/regular';
 const out = {};
 for (const n of NAMES) {

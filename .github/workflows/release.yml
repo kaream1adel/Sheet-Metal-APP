@@ -15,6 +15,7 @@ permissions:
 env:
   # The installer bundles this Node; an update package built with another major
   # version is refused by the app (native code must match node\node.exe).
+  # Every install so far runs 22: keep it (CLAUDE.md, «Node version»).
   NODE_VERSION: '22'
 
 jobs:

@@ -1,8 +1,10 @@
-// Backups, updates, the share page (tunnel + QR) and start-with-Windows. Admin only.
+// Backups, updates, the share page (tunnel + QR), start-with-Windows, general settings,
+// the AI reading key (server only) and إقفال الشهر. Admin only (permission "settings").
 import { Router } from 'express';
 import { requirePerm } from '../auth.js';
 import { audit } from '../db.js';
-import { getSettings, setSettings } from '../settings.js';
+import { getSettings, setSettings, publicSettings } from '../settings.js';
+import { listMonthLocks, lockMonth, unlockMonth } from '../ledger.js';
 import { listBackups, makeBackup, backupFile, restoreBackup, backupStatus } from '../backup.js';
 import { checkForUpdate, applyUpdate, rollback, updateStatus } from '../update.js';
 import { shareInfo, restartTunnel, cloudflaredPath } from '../tunnel.js';
@@ -11,7 +13,7 @@ import { cleanText, httpError, asyncRoute } from '../util.js';
 import fs from 'fs';
 
 export const system = Router();
-const admin = requirePerm('settings.manage');
+const admin = requirePerm('settings');
 
 // ---------- backups ----------
 system.get('/backups', admin, (_req, res) => {
@@ -104,4 +106,76 @@ system.put('/autostart', admin, (req, res) => {
   const r = setAutostart(!!req.body?.enabled);
   audit(req.user.id, 'update', 'settings', null, null, { autostart: r.enabled });
   res.json(r);
+});
+
+// ---------- what the home page shows the admin about the PC ----------
+system.get('/system/status', admin, (_req, res) => {
+  const u = updateStatus();
+  res.json({ backup: backupStatus(), update_available: u.available, installed: u.installed, version: u.current });
+});
+
+// ---------- general settings ----------
+system.get('/settings', admin, (_req, res) => res.json({ settings: publicSettings() }));
+
+system.put('/settings', admin, (req, res) => {
+  const b = req.body || {};
+  const v = {};
+  for (const k of ['company_name', 'company_phone', 'company_address']) if (b[k] !== undefined) v[k] = cleanText(b[k], 200);
+  if (b.cheque_alert_days !== undefined) {
+    const n = Number(b.cheque_alert_days);
+    if (!Number.isInteger(n) || n < 0 || n > 60) throw httpError(400, 'عدد الأيام غلط');
+    v.cheque_alert_days = n;
+  }
+  const before = publicSettings();
+  setSettings(v);
+  audit(req.user.id, 'update', 'settings', null, before, publicSettings());
+  res.json({ settings: publicSettings() });
+});
+
+// ---------- القراءة الآلية: the Claude API key never leaves the server ----------
+const AI_MODELS = [
+  { id: 'claude-opus-5-5', name: 'Claude Opus 5.5 (الأدق)' },
+  { id: 'claude-sonnet-5', name: 'Claude Sonnet 5 (أرخص)' },
+];
+
+function aiView() {
+  const s = getSettings();
+  return { enabled: !!s.ai_enabled, configured: !!s.ai_api_key, model: s.ai_model, models: AI_MODELS };
+}
+
+system.get('/settings/ai', admin, (_req, res) => res.json(aiView()));
+
+system.put('/settings/ai', admin, (req, res) => {
+  const b = req.body || {};
+  const v = {};
+  if (b.enabled !== undefined) v.ai_enabled = !!b.enabled;
+  if (b.model !== undefined) {
+    if (!AI_MODELS.some((m) => m.id === b.model)) throw httpError(400, 'الموديل غلط');
+    v.ai_model = b.model;
+  }
+  if (b.api_key !== undefined) {
+    const key = cleanText(b.api_key, 300);
+    if (key && !/^sk-ant-[A-Za-z0-9_-]{10,}$/.test(key)) throw httpError(400, 'المفتاح شكله غلط — بيبدأ بـ sk-ant-');
+    v.ai_api_key = key;
+  }
+  if (v.ai_enabled && !(v.ai_api_key ?? getSettings().ai_api_key)) throw httpError(400, 'اكتب مفتاح الخدمة الأول');
+  const before = aiView();
+  setSettings(v);
+  const after = aiView();
+  // The key itself is never written to the audit log either.
+  audit(req.user.id, 'update', 'settings', null, { ...before, models: undefined }, { ...after, models: undefined, key_changed: b.api_key !== undefined });
+  res.json(after);
+});
+
+// ---------- إقفال الشهر ----------
+system.get('/month-locks', admin, (_req, res) => res.json({ locks: listMonthLocks() }));
+
+system.post('/month-locks', admin, (req, res) => {
+  lockMonth(String(req.body?.month || ''), req.user.id, cleanText(req.body?.note, 300));
+  res.status(201).json({ locks: listMonthLocks() });
+});
+
+system.delete('/month-locks/:month', admin, (req, res) => {
+  unlockMonth(req.params.month, req.user.id, cleanText(req.body?.reason, 300));
+  res.json({ locks: listMonthLocks() });
 });

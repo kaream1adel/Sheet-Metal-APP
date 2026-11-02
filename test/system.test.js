@@ -1,4 +1,5 @@
-// Backups, restore, the update button and rollback (against a fake GitHub), share page.
+// Backups, restore, the update button and rollback (against a fake GitHub), share page,
+// settings (AI key never sent back) and إقفال الشهر.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'fs';
@@ -66,13 +67,12 @@ after(async () => {
 });
 
 test('staff can not reach backups, updates or the share page', async () => {
-  for (const url of ['/api/backups', '/api/update', '/api/share', '/api/autostart']) {
+  for (const url of ['/api/backups', '/api/update', '/api/share', '/api/autostart', '/api/system/status', '/api/settings', '/api/settings/ai', '/api/month-locks']) {
     assert.equal((await staff.get(url)).status, 403, url);
   }
   assert.equal((await staff.post('/api/backups')).status, 403);
   assert.equal((await staff.post('/api/update/apply')).status, 403);
-  const home = await staff.get('/api/home');
-  assert.equal(home.data.system, undefined);
+  assert.equal((await staff.post('/api/month-locks', { month: '2026-01' })).status, 403);
 });
 
 test('manual backup, list, download and a bad name', async () => {
@@ -85,19 +85,20 @@ test('manual backup, list, download and a bad name', async () => {
   const dl = await fetch(`${app.base}/api/backups/${r.data.name}/download`, { headers: { cookie: admin.cookie } });
   assert.equal(dl.status, 200);
   assert.equal(Buffer.from(await dl.arrayBuffer()).subarray(0, 15).toString(), 'SQLite format 3');
-  assert.equal((await admin.get('/api/backups/..%2Fsheet-metal.sqlite/download')).status, 400);
+  assert.equal((await admin.get('/api/backups/..%2Fsafa.sqlite/download')).status, 400);
+  assert.match(r.data.name, /^safa_/);
 });
 
 test('restore brings the old data back and keeps a safety copy', async () => {
   const { data: { name } } = await admin.post('/api/backups');
-  const c = await admin.post('/api/clients', { name: 'عميل بعد النسخة' });
+  const c = await admin.post('/api/parties', { kind: 'client', name: 'عميل بعد النسخة' });
   assert.equal(c.status, 201);
   assert.equal((await admin.post(`/api/backups/${name}/restore`, {})).status, 400); // must confirm
   const r = await admin.post(`/api/backups/${name}/restore`, { confirm: true });
   assert.equal(r.status, 200);
   assert.match(r.data.safety, /_restore\.sqlite$/);
-  const { data } = await admin.get('/api/clients');
-  assert.ok(!data.clients.some((x) => x.name === 'عميل بعد النسخة'));
+  const { data } = await admin.get('/api/parties?kind=client');
+  assert.ok(!data.parties.some((x) => x.name === 'عميل بعد النسخة'));
   const audit = getDb().prepare("SELECT * FROM audit_log WHERE action = 'restore'").get();
   assert.ok(audit && JSON.parse(audit.after_json).restored === name);
 });
@@ -131,7 +132,7 @@ test('update: check, apply into versions\\<build>, then roll back', async () => 
   let r = await admin.post('/api/update/check');
   assert.equal(r.data.available, true);
   assert.equal(r.data.latest.build, 7);
-  assert.equal((await admin.get('/api/home')).data.system.update_available, true);
+  assert.equal((await admin.get('/api/system/status')).data.update_available, true);
 
   r = await admin.post('/api/update/apply');
   assert.equal(r.status, 200, JSON.stringify(r.data));
@@ -161,21 +162,21 @@ test('update: check, apply into versions\\<build>, then roll back', async () => 
 test('rollback after a schema change goes back to the pre-update backup', async () => {
   process.env.SHEETMETAL_HOME = home;
   const { data: { name } } = await admin.post('/api/backups');
-  await admin.post('/api/clients', { name: 'عميل بعد التحديث' });
+  await admin.post('/api/parties', { kind: 'client', name: 'عميل بعد التحديث' });
   // Pretend this running build (0) is the update that moved the schema from 1.
   fs.writeFileSync(path.join(home, 'current.txt'), '0');
   fs.mkdirSync(path.join(home, 'versions', '0', 'src'), { recursive: true });
   fs.writeFileSync(path.join(home, 'previous.txt'), '7');
   fs.writeFileSync(path.join(process.env.SHEETMETAL_DATA, 'update-state.json'),
-    JSON.stringify({ from: '7', to: '0', backup: name, schema_before: 1 }));
+    JSON.stringify({ from: '7', to: '0', backup: name, db_file: 'safa.sqlite', schema_before: 0 }));
   let r = await admin.get('/api/update');
   assert.equal(r.data.rollback_loses_data, true);
   setRestartHandler(() => { restarts += 1; openDb(); }); // the "old code" starting again
   r = await admin.post('/api/update/rollback', { confirm: true });
   assert.equal(r.status, 200, JSON.stringify(r.data));
   assert.equal(r.data.restored, name);
-  const { data } = await admin.get('/api/clients');
-  assert.ok(!data.clients.some((x) => x.name === 'عميل بعد التحديث'));
+  const { data } = await admin.get('/api/parties?kind=client');
+  assert.ok(!data.parties.some((x) => x.name === 'عميل بعد التحديث'));
   assert.ok(getDb().prepare("SELECT 1 FROM audit_log WHERE action = 'rollback'").get());
 });
 
@@ -190,4 +191,54 @@ test('share page: wifi links with QR codes, token never sent back', async () => 
   const a = getDb().prepare("SELECT after_json FROM audit_log WHERE entity = 'settings' ORDER BY id DESC").get();
   assert.ok(!a.after_json.includes('secret-token'));
   assert.equal((await admin.put('/api/share/settings', { tunnel_url: 'http://x' })).status, 400);
+});
+
+test('the first update from the old app never rolls back into the old database', async () => {
+  process.env.SHEETMETAL_HOME = home;
+  // State written by the old code: no db_file, and its backup is of sheet-metal.sqlite.
+  fs.writeFileSync(path.join(process.env.SHEETMETAL_DATA, 'update-state.json'),
+    JSON.stringify({ from: '7', to: '0', backup: 'sheet-metal_2026-10-27_10-00-00_update.sqlite', schema_before: 25 }));
+  const r = await admin.get('/api/update');
+  assert.equal(r.data.rollback_loses_data, false);
+});
+
+test('backups of the old app in the same folder are not listed and can not be restored', async () => {
+  const dir = path.join(process.env.SHEETMETAL_DATA, 'backups');
+  fs.writeFileSync(path.join(dir, 'sheet-metal_2026-10-27_10-00-00_manual.sqlite'), 'x');
+  const list = await admin.get('/api/backups');
+  assert.ok(!list.data.backups.some((b) => b.name.startsWith('sheet-metal_')));
+  const r = await admin.post('/api/backups/sheet-metal_2026-10-27_10-00-00_manual.sqlite/restore', { confirm: true });
+  assert.equal(r.status, 400);
+});
+
+test('AI key is stored on the server and never sent back', async () => {
+  let r = await admin.put('/api/settings/ai', { enabled: true });
+  assert.equal(r.status, 400); // no key yet
+  r = await admin.put('/api/settings/ai', { api_key: 'not-a-key' });
+  assert.equal(r.status, 400);
+  r = await admin.put('/api/settings/ai', { api_key: 'sk-ant-test-0123456789abcdef', enabled: true });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.configured, true);
+  for (const url of ['/api/settings/ai', '/api/settings', '/api/lookups']) {
+    const x = await admin.get(url);
+    assert.ok(!JSON.stringify(x.data).includes('sk-ant-test'), url);
+  }
+  assert.equal((await admin.get('/api/lookups')).data.ai_enabled, true);
+  const a = getDb().prepare("SELECT before_json, after_json FROM audit_log WHERE entity = 'settings'").all();
+  assert.ok(a.every((x) => !String(x.after_json).includes('sk-ant-test') && !String(x.before_json).includes('sk-ant-test')));
+  r = await admin.put('/api/settings', { company_name: 'شركة تجريبية' });
+  assert.equal(r.data.settings.company_name, 'شركة تجريبية');
+});
+
+test('month lock over HTTP: lock, list, unlock with a reason', async () => {
+  let r = await admin.post('/api/month-locks', { month: '2026-05', note: 'اتراجع' });
+  assert.equal(r.status, 201);
+  assert.ok(r.data.locks.some((l) => l.month === '2026-05'));
+  r = await admin.post('/api/parties', { kind: 'client', name: 'عميل شهر مقفول', opening_balance: '5', opening_date: '2026-05-10' });
+  assert.equal(r.status, 409);
+  assert.match(r.data.error, /مقفول/);
+  assert.equal((await admin.get('/api/parties?kind=client')).data.parties.some((p) => p.name === 'عميل شهر مقفول'), false);
+  assert.equal((await admin.del('/api/month-locks/2026-05')).status, 400); // reason
+  r = await fetch(`${app.base}/api/month-locks/2026-05`, { method: 'DELETE', headers: { cookie: admin.cookie, 'content-type': 'application/json' }, body: JSON.stringify({ reason: 'تصحيح' }) });
+  assert.equal(r.status, 200);
 });

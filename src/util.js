@@ -31,10 +31,33 @@ export function parseNumber(v) {
   return Number.isFinite(n) ? n : NaN;
 }
 
-export function parseDate(v) {
-  if (!v) return null;
+// A real calendar day 'YYYY-MM-DD' (Arabic digits accepted), or null. 2026-02-31, 2026-13-40,
+// 2026-2-5 and years outside 2000-2100 are not dates. Every date the app stores goes through here.
+export function isRealDate(v) {
+  if (v === null || v === undefined) return null;
   const s = toAsciiDigits(v).trim();
-  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : undefined; // undefined = invalid
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (y < 2000 || y > 2100 || mo < 1 || mo > 12 || d < 1) return null;
+  return d <= new Date(Date.UTC(y, mo, 0)).getUTCDate() ? s : null;
+}
+
+// Blank → null, a real date → 'YYYY-MM-DD', anything else → undefined (invalid).
+export function parseDate(v) {
+  if (v === null || v === undefined || String(v).trim() === '') return null;
+  return isRealDate(v) ?? undefined;
+}
+
+// A date from a request: blank → fallback (or a 400 when required), invalid → a 400 naming the field.
+export function requireDate(v, { field = 'date', label = 'التاريخ', required = true, fallback = null } = {}) {
+  const d = parseDate(v);
+  if (d === null) {
+    if (required) throw httpError(400, `اكتب ${label}`, { field });
+    return fallback;
+  }
+  if (d === undefined) throw httpError(400, `${label} غلط — لازم يكون يوم موجود في النتيجة (زي 2026-10-15)`, { field });
+  return d;
 }
 
 export function todayISO(d = new Date()) {

@@ -1,25 +1,26 @@
-// Every screen and action checks a permission, never a role name, so new roles or
-// per-user privileges can be added later without touching the routes.
+// Every screen and action checks a permission, never a role name (requirePerm in auth.js),
+// so per-user privileges can be added without touching the routes.
 
 export const PERMISSIONS = {
-  'sheets.create': 'إدخال وتصوير الورق',
-  'sheets.review': 'مراجعة الورق',
-  'sheets.confirm': 'تأكيد الورق',
-  'sheets.cancel': 'إلغاء ورقة متأكدة',
-  'production.view': 'عرض الإنتاج',
-  'deliveries.manage': 'تسليم الشغل وطباعة إذن التسليم',
-  'clients.edit': 'إضافة وتعديل العملاء',
-  'technicians.edit': 'إضافة وتعديل الفنيين',
-  'machines.edit': 'تعديل المكن والخامات',
-  'money.view': 'الأسعار والحسابات والمدفوعات',
-  'users.manage': 'المستخدمين والصلاحيات',
-  'settings.manage': 'الإعدادات والتحديثات والنسخ الاحتياطي',
+  'money.view': 'يشوف الفلوس (الأسعار والأرصدة والخزينة)',
+  'money.post': 'يسجل حركات فلوس (قيود وأرصدة أول المدة)',
+  pricing: 'التسعير والترحيل',
+  treasury: 'الخزينة والبنك',
+  'expenses.record': 'يسجل أذونات صرف',
+  cheques: 'الشيكات',
+  reports: 'التقارير',
+  settings: 'الإعدادات والنسخ الاحتياطي والتحديث',
+  users: 'المستخدمين والصلاحيات',
+  import: 'الاستيراد من الإكسيل',
+  'operations.record': 'يسجل أوراق التشغيل ويصورها',
+  'operations.approve': 'يراجع ويعتمد أوراق التشغيل',
+  workorders: 'أوامر الشغل',
 };
 
 export const ROLE_PERMISSIONS = {
   admin: Object.keys(PERMISSIONS),
-  staff: ['sheets.create', 'sheets.review', 'sheets.confirm', 'production.view', 'deliveries.manage',
-    'clients.edit', 'technicians.edit'],
+  // The workshop manager: the whole operations side, never money.
+  staff: ['operations.record', 'operations.approve', 'workorders', 'expenses.record'],
 };
 
 export const ROLE_NAMES = { admin: 'أدمن', staff: 'مدير الورشة' };
@@ -32,3 +33,4 @@ export function permissionsOf(user) {
 }
 
 export const can = (user, perm) => permissionsOf(user).has(perm);
+export const canAny = (user, ...perms) => perms.some((p) => can(user, p));

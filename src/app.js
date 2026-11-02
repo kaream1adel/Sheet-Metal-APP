@@ -1,23 +1,23 @@
 // The Express app (no listening here, so tests can start it on any port).
 import express from 'express';
-import { PUBLIC_DIR } from './paths.js';
-import { getDb, audit } from './db.js';
-import { loadUser, login, endSession, startSession, publicUser, hashPassword, checkPasswordRule, requireUser } from './auth.js';
-import { HttpError, httpError, cleanText } from './util.js';
-import { people } from './routes/people.js';
-import { sheets } from './routes/sheets.js';
-import { money } from './routes/money.js';
-import { deliveries } from './routes/deliveries.js';
-import { print } from './routes/print.js';
-import { system } from './routes/system.js';
-import { forms } from './routes/forms.js';
-import { ocr } from './routes/ocr.js';
-import { reports } from './routes/reports.js';
-import { ai } from './routes/ai.js';
-import { accounting } from './routes/accounting.js';
 import { createRequire } from 'module';
 import { join, dirname } from 'path';
+import { PUBLIC_DIR } from './paths.js';
+import { getDb, audit } from './db.js';
+import { loadUser, login, endSession, startSession, publicUser, hashPassword, checkPasswordRule, requirePerm } from './auth.js';
+import { HttpError, httpError, cleanText } from './util.js';
+import { can } from './permissions.js';
 import { APP_VERSION } from './version.js';
+import { users } from './routes/users.js';
+import { parties } from './routes/parties.js';
+import { lookups } from './routes/lookups.js';
+import { system } from './routes/system.js';
+// Module routers. Each module owns its file; the mount points are fixed here.
+import { operations } from './routes/operations.js';
+import { pricing } from './routes/pricing.js';
+import { treasury } from './routes/treasury.js';
+import { reports } from './routes/reports.js';
+import { importer } from './routes/import.js';
 
 export { APP_VERSION };
 
@@ -25,8 +25,26 @@ export function createApp() {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', 'loopback'); // the tunnel connects from localhost
-  // Straightened sheet photos are a few hundred KB of base64; everything else is small.
-  app.use(['/api/sheets/photo', /^\/api\/sheets\/\d+\/photo$/], express.json({ limit: '12mb' }));
+  // Nothing we serve may be sniffed into another type (an uploaded photo stays a photo).
+  app.use((_req, res, next) => { res.setHeader('X-Content-Type-Options', 'nosniff'); next(); });
+  // The session is read before any body, so a big body is parsed only for a signed-in user
+  // who may upload there (the phone link makes this PC reachable from the internet).
+  app.use(loadUser);
+  // Sheet photos (operations) and the Excel file (import) are big; everything else is small.
+  const BIG = [
+    [/^\/api\/operations\/photos$/, ['operations.record']],
+    [/^\/api\/operations\/sheets\/\d+\/photo$/, ['operations.record']],
+    [/^\/api\/treasury\/vouchers\/\d+\/photo$/, ['expenses.record', 'treasury']],
+    [/^\/api\/import(\/|$)/, ['import']],
+  ];
+  const bigJson = express.json({ limit: '25mb' });
+  app.use((req, res, next) => {
+    const hit = req.method === 'POST' && BIG.find(([re]) => re.test(req.path));
+    if (!hit) return next();
+    if (!req.user) return next(httpError(401, 'لازم تسجل دخول الأول'));
+    if (!hit[1].some((p) => can(req.user, p))) return next(httpError(403, 'مش مسموح لك بالحركة دي'));
+    bigJson(req, res, next);
+  });
   app.use(express.json({ limit: '1mb' }));
 
   // State-changing requests must be JSON: a plain HTML form on another site can't send that.
@@ -36,7 +54,6 @@ export function createApp() {
     }
     next();
   });
-  app.use(loadUser);
 
   // ---------- session ----------
   app.get('/api/session', (req, res) => {
@@ -72,32 +89,29 @@ export function createApp() {
     res.json({ ok: true });
   });
 
-  app.get('/api/audit', requireUser, (req, res) => {
-    if (!publicUser(req.user).permissions.includes('settings.manage')) throw httpError(403, 'مش مسموح لك بالحركة دي');
+  // سجل التعديلات (raw). The reports module builds the friendly screen on top of it.
+  // Its before/after JSON carries totals, credit limits and the like: money.view as well.
+  app.get('/api/audit', requirePerm('reports'), requirePerm('money.view'), (req, res) => {
+    const limit = Math.min(Number(req.query.limit) || 200, 1000);
     const rows = getDb().prepare(`
       SELECT a.*, u.display_name AS user_name FROM audit_log a LEFT JOIN users u ON u.id = a.user_id
       WHERE (? IS NULL OR a.entity = ?) AND (? IS NULL OR a.entity_id = ?)
-      ORDER BY a.id DESC LIMIT 200`).all(req.query.entity ?? null, req.query.entity ?? null, req.query.id ?? null, req.query.id ?? null);
+      ORDER BY a.id DESC LIMIT ?`).all(req.query.entity ?? null, req.query.entity ?? null, req.query.id ?? null, req.query.id ?? null, limit);
     res.json({ audit: rows });
   });
 
-  app.use('/api', people);
-  app.use('/api', sheets);
-  app.use('/api', money);
-  app.use('/api', deliveries);
+  app.use('/api', users);
+  app.use('/api', parties);
+  app.use('/api', lookups);
   app.use('/api', system);
-  app.use('/api', ocr);
-  app.use('/api', reports);
-  app.use('/api', ai);
-  app.use('/api', accounting);
-  app.use(forms);
+  app.use('/api/operations', operations);
+  app.use('/api/pricing', pricing);
+  app.use('/api/treasury', treasury);
+  app.use('/api/reports', reports);
+  app.use('/api/import', importer);
   app.use('/api', (_req, _res, next) => next(httpError(404, 'مش موجود')));
-  app.use(print);
 
   // ---------- the screens ----------
-  // The QR reader the photo screen loads (served from node_modules, works offline).
-  const jsqr = createRequire(import.meta.url).resolve('jsqr/dist/jsQR.js');
-  app.get('/vendor/jsQR.js', (_req, res) => res.sendFile(jsqr));
   // The interface font (IBM Plex Sans Arabic), served locally so it works offline.
   const fonts = join(dirname(createRequire(import.meta.url).resolve('@fontsource/ibm-plex-sans-arabic/package.json')), 'files');
   app.use('/fonts', express.static(fonts, { maxAge: '30d', immutable: true }));
@@ -109,6 +123,11 @@ export function createApp() {
   app.use((err, _req, res, _next) => {
     if (err instanceof HttpError) return res.status(err.status).json({ error: err.message, ...(err.extra || {}) });
     if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'طلب غير مفهوم' });
+    if (err.type === 'entity.too.large') return res.status(413).json({ error: 'الملف كبير قوي — صوّر الورقة تاني من غير زوم' });
+    if (/SQLITE_CONSTRAINT/.test(err.code || '')) {
+      console.error(err.message);
+      return res.status(409).json({ error: 'البيانات دي متعارضة مع حاجة متسجلة قبل كده' });
+    }
     console.error(err);
     res.status(500).json({ error: 'حصلت مشكلة في البرنامج. جرب تاني، ولو اتكررت بلغ الأدمن.' });
   });

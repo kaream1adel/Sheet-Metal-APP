@@ -1,36 +1,44 @@
-// قراءة بالذكاء الاصطناعي (optional, needs internet): a photo of a technician's sheet —
-// a printed form or the plain paper they already use — goes to Claude, which returns
-// the table as strict JSON. Clients and materials are matched against the app's own
-// lists (closed set), never invented. The result becomes ordinary reads: they fill
-// empty cells only, and anything unsure stays yellow until a person looks (same gate
-// as the offline reader). Only the admin's API key leaves this file; it is never
-// sent to a browser.
+// القراءة الآلية (optional, needs internet): a photo of a technician's paper goes to Claude,
+// which returns the table as strict JSON (structured output). Clients and materials are
+// matched against the app's own lists (closed set), never invented. The result becomes the
+// lines of an op_sheet in review; anything the reader is unsure of stays yellow until a
+// person looks (lineIssues 'ai_unsure'). The API key is read here, on the server, and is
+// never sent to a browser. Ported from the first version (git show fd5faa1:src/ai.js).
 import fs from 'fs';
 import { join } from 'path';
 import Anthropic from '@anthropic-ai/sdk';
-import { betaJSONSchemaOutputFormat } from '@anthropic-ai/sdk/helpers/beta/json-schema';
 import { getDb } from './db.js';
 import { dataDir } from './paths.js';
 import { getSettings } from './settings.js';
-import { MACHINE_FIELDS } from './sheets.js';
 import { httpError, todayISO } from './util.js';
+import * as P from '../public/js/modules/ops-paper.js';
 
-// Choices shown in الإعدادات. $ per million tokens (input, output, cache read).
+// $ per million tokens (input, output, cache read), for the cost log.
 export const AI_MODELS = {
   'claude-opus-5-5': { name: 'Claude Opus 5.5 (الأدق)', input: 4, output: 20, cacheRead: 0.2 },
+  'claude-sonnet-5': { name: 'Claude Sonnet 5 (أرخص)', input: 2, output: 10, cacheRead: 0.2 },
   'claude-sonnet-5-5': { name: 'Claude Sonnet 5.5 (أرخص)', input: 2, output: 10, cacheRead: 0.2 },
-  'claude-haiku-5-5': { name: 'Claude Haiku 5.5 (الأرخص)', input: 0.1, output: 0.5, cacheRead: 0.01 },
 };
 export const DEFAULT_AI_MODEL = 'claude-opus-5-5';
 
+// What the reader returns per row (the paper's fields).
 const NUMBERS = ['thickness', 'pieces', 'ops_per_piece', 'total_written', 'sheets', 'minutes_per_sheet',
-  'pieces_per_sheet', 'hits_per_piece', 'louvers_per_piece', 'minutes'];
-const DITTO_ABLE = ['client_id', 'part_name', 'material_id', 'thickness', 'work_date', 'material_source', ...NUMBERS, 'sheet_size'];
+  'pieces_per_sheet', 'hits_per_piece', 'louvers_per_piece'];
+const TEXTS = ['sheet_size', 'start_time', 'end_time'];
+const DITTO_ABLE = ['client_id', 'part_name', 'material_id', 'work_date', 'material_source', ...NUMBERS, ...TEXTS];
+// reader field → op_lines field
+const TO_LINE = { client_id: 'client_text', material_id: 'material_text', ops_per_piece: 'per_piece' };
+const MACHINE_FIELDS = {
+  press: ['pieces', 'ops_per_piece', 'total_written'],
+  shear: ['pieces', 'ops_per_piece', 'total_written'],
+  laser: ['sheets', 'minutes_per_sheet', 'start_time', 'end_time'],
+  punch: ['sheets', 'minutes_per_sheet', 'start_time', 'end_time', 'sheet_size', 'pieces_per_sheet', 'pieces', 'hits_per_piece', 'louvers_per_piece'],
+};
 
 const nullable = (type) => ({ anyOf: [{ type }, { type: 'null' }] });
 
 // What Claude must return. Every field is always present (null when not written).
-const SCHEMA = {
+export const SCHEMA = {
   type: 'object',
   additionalProperties: false,
   required: ['machine', 'sheet_date', 'technician_name', 'rows', 'notes'],
@@ -44,8 +52,8 @@ const SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['row', 'client_written', 'client_id', 'part_name', 'material_written', 'material_id', ...NUMBERS,
-          'sheet_size', 'work_date', 'material_source', 'ditto_fields', 'confidence', 'uncertain_fields'],
+        required: ['row', 'client_written', 'client_id', 'part_name', 'material_written', 'material_id', ...NUMBERS, ...TEXTS,
+          'work_date', 'material_source', 'ditto_fields', 'confidence', 'uncertain_fields'],
         properties: {
           row: { type: 'integer' },
           client_written: nullable('string'),
@@ -54,7 +62,7 @@ const SCHEMA = {
           material_written: nullable('string'),
           material_id: nullable('integer'),
           ...Object.fromEntries(NUMBERS.map((f) => [f, nullable('number')])),
-          sheet_size: nullable('string'),
+          ...Object.fromEntries(TEXTS.map((f) => [f, nullable('string')])),
           work_date: nullable('string'),
           material_source: { anyOf: [{ type: 'string', enum: ['client', 'factory'] }, { type: 'null' }] },
           ditto_fields: { type: 'array', items: { type: 'string', enum: DITTO_ABLE } },
@@ -66,17 +74,28 @@ const SCHEMA = {
   },
 };
 
-// Stable instructions (cached). Today's date and the photo go in the user turn.
-const RULES = `You read photos of handwritten daily machine sheets from an Egyptian sheet-metal workshop and return the table as JSON.
+// Stable instructions (cached): the old paper's RULES. Today's date and the photo go in the user turn.
+export const RULES = `You read photos of handwritten daily machine sheets from an Egyptian sheet-metal workshop and return the table as JSON.
 
-The sheet is either the workshop's printed form (title "ورقة التناية / المقص / الليزر / البنش", a QR code, numbered rows) or the plain paper the technicians used before. Read every row that has writing; skip empty rows. "row" is the printed row number when the form has one, otherwise the order from the top starting at 1.
+Read every row that has writing; skip empty rows. "row" is the printed row number (the م column) when the paper has one, otherwise the order from the top starting at 1.
+
+Tell the machine from the title at the top ("التناية – سجل التشغيل اليومي", "المقص …", "الليزر …", "البنش …") and from the column headings. Use "unknown" only when neither shows it.
+
+The paper looks like this:
+- Header line: التاريخ, اسم المشغل (the technician), أمر الشغل, الوردية — often left empty, or used for the day name.
+- Press brake and shear columns, right to left: م | اسم القطعة | العميل | الخامة | السمك | عدد القطع | عدد التنيات (or القصات) / قطعة | إجمالي التنيات (or القصات) | التاريخ | المراجعة.
+- Laser and punch columns: م | اسم القطعة | العميل | الخامة | السمك | الكمية | وقت البداية | وقت النهاية | التاريخ | المراجعة. الكمية is the number of sheets. Technicians usually write the minutes in وقت البداية (for example "٧ دقيقة"): that is minutes_per_sheet. When real clock times are written in both وقت البداية and وقت النهاية (for example 8:30 and 9:10), put them in start_time / end_time as H:MM and leave minutes_per_sheet null.
+- The المراجعة column is often used for "خامة العميل" / "خامة المصنع" (material_source client / factory), or holds a ditto mark.
+- The thickness and the material are sometimes written together in one cell ("١٫٥م اسود", "AL ٢م"): split them.
+- The punch technician sometimes ignores the columns and writes sentences across the table, for example "تم عمل عدد ٣٧ لوح صاج مجلفن ١م مقاس 2500X1250 ترى ١٠×١٠×١٠ بيطلع عدد ٤ قطع … ١٤٨ = ٤×٣٧ قطعة". Turn each such job into one row: sheets 37, material مجلفن, thickness 1, sheet_size "2500x1250", pieces_per_sheet 4, pieces 148, part_name "ترى ١٠×١٠×١٠". Put meters and other worked-out amounts in notes, not in the row. A day name or date written between jobs is the work_date of the jobs under it.
+- Louvers (لوفر) are written on the punch sheet: louvers_per_piece is the number of louvers in one piece, pieces the number of pieces.
 
 Machines and their columns:
 - press (التناية): pieces = عدد القطع, ops_per_piece = تنيات للقطعة, total_written = إجمالي التنيات
 - shear (المقص): pieces = عدد القطع, ops_per_piece = قصات للقطعة, total_written = إجمالي القصات
-- laser (الليزر): sheets = عدد الألواح, minutes_per_sheet = دقائق للوح
-- punch (البنش): sheets = عدد الألواح, sheet_size = مقاس اللوح (text like "2500x1250"), pieces_per_sheet = قطع من اللوح, pieces = إجمالي القطع, hits_per_piece = ضربات للقطعة, louvers_per_piece = لوفر للقطعة, minutes = دقائق
-Every machine also has: client (العميل), part_name (اسم القطعة, optional), material (الخامة), thickness in mm (السمك), work_date (التاريخ), material_source (الخامة من: "عميل" = client, "مصنع" = factory).
+- laser (الليزر): sheets = عدد الألواح, minutes_per_sheet = دقائق للوح (or start_time / end_time)
+- punch (البنش): sheets = عدد الألواح, minutes_per_sheet = دقائق للوح (or start_time / end_time), sheet_size = مقاس اللوح (text like "2500x1250"), pieces_per_sheet = قطع من اللوح, pieces = إجمالي القطع, hits_per_piece = ضربات للقطعة, louvers_per_piece = لوفر للقطعة
+Every machine also has: client (العميل), part_name (اسم القطعة, optional), material (الخامة), thickness in mm (السمك), work_date (التاريخ), material_source (المراجعة: "خامة العميل" / "عميل" = client, "خامة المصنع" / "مصنع" = factory).
 Fields that do not belong to the machine are null.
 
 How the technicians write:
@@ -93,12 +112,13 @@ Confidence per row: "high" only when every filled cell is clearly legible; other
 
 function listsBlock() {
   const db = getDb();
-  const clients = db.prepare('SELECT id, name FROM clients WHERE active = 1 ORDER BY id').all();
+  const clients = db.prepare("SELECT id, name, aliases FROM parties WHERE kind = 'client' AND active = 1 ORDER BY id").all();
   const materials = db.prepare('SELECT id, name, aliases FROM materials WHERE active = 1 ORDER BY id').all();
   const techs = db.prepare('SELECT name FROM technicians WHERE active = 1 ORDER BY id').all();
+  const al = (s) => { try { const a = JSON.parse(s || '[]'); return a.length ? ` / ${a.join(' / ')}` : ''; } catch { return ''; } };
   return [
-    'Clients (id: name):', ...clients.map((c) => `${c.id}: ${c.name}`), clients.length ? '' : '(none yet)',
-    'Materials (id: name / other spellings):', ...materials.map((m) => `${m.id}: ${m.name}${JSON.parse(m.aliases || '[]').length ? ' / ' + JSON.parse(m.aliases).join(' / ') : ''}`),
+    'Clients (id: name / other spellings):', ...clients.map((c) => `${c.id}: ${c.name}${al(c.aliases)}`), clients.length ? '' : '(none yet)',
+    'Materials (id: name / other spellings):', ...materials.map((m) => `${m.id}: ${m.name}${al(m.aliases)}`),
     '',
     `Technicians: ${techs.map((t) => t.name).join('، ') || '(none yet)'}`,
   ].join('\n');
@@ -107,140 +127,221 @@ function listsBlock() {
 // ---------- settings + status ----------
 export function aiStatus() {
   const s = getSettings();
-  const model = AI_MODELS[s.ai_model] ? s.ai_model : DEFAULT_AI_MODEL;
+  const model = s.ai_model && /^claude-/.test(s.ai_model) ? s.ai_model : DEFAULT_AI_MODEL;
   return { enabled: !!s.ai_enabled && !!s.ai_api_key, configured: !!s.ai_api_key, model };
 }
 
 export function aiUsage() {
   const db = getDb();
   const month = todayISO().slice(0, 7);
-  const row = db.prepare(`SELECT COUNT(*) AS reads, COALESCE(SUM(cost_micro_usd), 0) AS cost FROM ai_usage WHERE substr(at, 1, 7) = ?`).get(month);
-  const all = db.prepare('SELECT COUNT(*) AS reads, COALESCE(SUM(cost_micro_usd), 0) AS cost FROM ai_usage').get();
-  return { month, month_reads: row.reads, month_usd: row.cost / 1e6, total_reads: all.reads, total_usd: all.cost / 1e6 };
+  const row = db.prepare('SELECT COUNT(*) AS reads, COALESCE(SUM(cost_micro_usd), 0) AS c FROM ai_usage WHERE substr(at, 1, 7) = ?').get(month);
+  return { month, month_reads: row.reads, month_usd: row.c / 1e6 };
 }
 
-// Tests point this at a fake API.
-const client = (apiKey) => new Anthropic({ apiKey, baseURL: process.env.SHEETMETAL_AI_BASE_URL || undefined, timeout: 120000, maxRetries: 2 });
+// Tests point this at a fake API. The SDK retries only a dropped connection, once; a busy
+// service is retried later by the photo job instead of inside one long wait.
+const client = (apiKey) => new Anthropic({ apiKey, baseURL: process.env.SHEETMETAL_AI_BASE_URL || undefined, timeout: 10 * 60 * 1000, maxRetries: 1 });
+const READ_DEADLINE_MS = 8 * 60 * 1000;
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // the API's limit for one image
 
 /**
  * Reads one sheet photo. Returns { result, usage } where result follows SCHEMA.
- * hint: { machine (code or null), form: true when it is the printed form }.
+ * hint: { machine (code or null), jobId }.
+ * Errors are Arabic httpErrors; err.retry = true when trying again later makes sense.
  */
 export async function readSheetPhoto(photoPath, hint = {}) {
   const s = getSettings();
   const status = aiStatus();
-  if (!status.enabled) throw httpError(409, 'القراءة بالذكاء الاصطناعي مش متفعلة — فعّلها من الإعدادات');
+  if (!status.enabled) throw httpError(409, 'القراءة الآلية مش متفعلة');
   const file = join(dataDir(), photoPath);
   if (!fs.existsSync(file)) throw httpError(404, 'ملف الصورة مش موجود');
-  const image = fs.readFileSync(file).toString('base64');
+  const bytes = fs.readFileSync(file);
+  if (bytes.length > MAX_IMAGE_BYTES) throw httpError(422, 'الصورة كبيرة قوي على القراءة — صوّرها تاني');
   const intro = [
     `Today's date: ${todayISO()}.`,
     hint.machine ? `This sheet is for the ${hint.machine} machine.` : 'The machine is not known: tell it from the title and columns.',
-    hint.form ? 'This is the printed form (already straightened).' : 'This is a plain photo of the paper.',
     'Read the sheet.',
   ].join(' ');
 
+  const retry = (err) => Object.assign(err, { retry: true });
+  const params = {
+    model: status.model,
+    max_tokens: 32000,
+    // Handwriting is hard: "high" makes the model look twice at unclear digits and names.
+    output_config: { effort: 'high', format: { type: 'json_schema', schema: SCHEMA } },
+    system: [
+      { type: 'text', text: RULES, cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: listsBlock(), cache_control: { type: 'ephemeral' } },
+    ],
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: bytes.toString('base64') } },
+        { type: 'text', text: intro },
+      ],
+    }],
+  };
+
   let message;
   try {
-    message = await client(s.ai_api_key).beta.messages.parse({
-      model: status.model,
-      max_tokens: 16000,
-      betas: ['server-side-fallback-2026-07-01'],
-      fallbacks: 'default', // a declined request is retried on a suitable model inside the same call
-      output_config: { effort: 'medium', format: betaJSONSchemaOutputFormat(SCHEMA) },
-      system: [
-        { type: 'text', text: RULES, cache_control: { type: 'ephemeral' } },
-        { type: 'text', text: listsBlock(), cache_control: { type: 'ephemeral' } },
-      ],
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: image } },
-          { type: 'text', text: intro },
-        ],
-      }],
-    });
+    const stream = client(s.ai_api_key).messages.stream(params, { signal: AbortSignal.timeout(READ_DEADLINE_MS) });
+    message = await stream.finalMessage();
   } catch (err) {
     if (err instanceof Anthropic.AuthenticationError || err instanceof Anthropic.PermissionDeniedError) {
-      throw httpError(502, 'مفتاح الذكاء الاصطناعي غلط أو موقوف — راجعه في الإعدادات');
+      throw httpError(502, 'مفتاح القراءة الآلية غلط أو موقوف — الأدمن يراجعه في الإعدادات');
     }
-    if (err instanceof Anthropic.RateLimitError) throw httpError(503, 'خدمة القراءة مشغولة دلوقتي — جرب كمان دقيقة');
-    if (err instanceof Anthropic.APIConnectionError) throw httpError(503, 'مفيش نت أو الخدمة مش بترد — اتقرت الورقة من غير الذكاء الاصطناعي');
-    if (err instanceof Anthropic.APIError) throw httpError(502, `خدمة القراءة رجعت خطأ (${err.status}) — جرب تاني`);
-    throw err;
+    if (err instanceof Anthropic.BadRequestError) throw httpError(422, 'خدمة القراءة مقبلتش الصورة دي — صوّرها تاني أو اكتبها بإيدك');
+    if (err instanceof Anthropic.RateLimitError) throw retry(httpError(503, 'خدمة القراءة مشغولة دلوقتي'));
+    if (err instanceof Anthropic.APIUserAbortError || err?.name === 'AbortError' || err?.name === 'TimeoutError') {
+      throw retry(httpError(504, 'القراءة خدت وقت أطول من اللازم'));
+    }
+    if (err instanceof Anthropic.APIConnectionError) throw retry(httpError(503, 'مفيش نت أو خدمة القراءة مش بترد'));
+    if (err instanceof Anthropic.APIError) throw retry(httpError(502, `خدمة القراءة رجعت خطأ (${err.status ?? '—'})`));
+    throw retry(httpError(502, 'حصلت مشكلة في الاتصال بخدمة القراءة'));
   }
+  // Every answer is paid for, so it is logged before anything else can fail.
+  const usage = recordUsage(message, hint.jobId);
   if (message.stop_reason === 'refusal') throw httpError(422, 'خدمة القراءة رفضت الصورة دي — اكتبها بإيدك');
-  if (message.stop_reason === 'max_tokens' || !message.parsed_output) throw httpError(502, 'القراءة ما كملتش — جرب تاني');
-
-  const usage = recordUsage(message, hint.sheetId);
-  return { result: message.parsed_output, usage };
+  if (message.stop_reason === 'max_tokens') throw retry(httpError(502, 'القراءة ما كملتش'));
+  const text = (message.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('');
+  let result;
+  try { result = JSON.parse(text); } catch { throw retry(httpError(502, 'رد القراءة مش مفهوم')); }
+  if (!result || typeof result !== 'object' || !Array.isArray(result.rows)) throw retry(httpError(502, 'رد القراءة مش مفهوم'));
+  return { result, usage };
 }
 
-function recordUsage(message, sheetId) {
-  const price = AI_MODELS[message.model] || AI_MODELS[DEFAULT_AI_MODEL];
+const PRICE_UNKNOWN = { input: 5, output: 25, cacheRead: 0.5 }; // the dearest price, an estimate
+function recordUsage(message, jobId) {
   const u = message.usage || {};
-  const inTok = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) * 1.25;
-  const cost = Math.round(inTok * price.input + (u.cache_read_input_tokens || 0) * price.cacheRead + (u.output_tokens || 0) * price.output);
-  getDb().prepare('INSERT INTO ai_usage (sheet_id, model, input_tokens, output_tokens, cache_read_tokens, cost_micro_usd) VALUES (?,?,?,?,?,?)')
-    .run(sheetId ?? null, message.model, u.input_tokens || 0, u.output_tokens || 0, u.cache_read_input_tokens || 0, cost);
-  return { model: message.model, cost_usd: cost / 1e6 };
+  const attempts = Array.isArray(u.iterations) && u.iterations.length ? u.iterations : [u];
+  let cost = 0;
+  let input = 0;
+  let output = 0;
+  let cacheRead = 0;
+  for (const a of attempts) {
+    const price = AI_MODELS[a.model || message.model] || PRICE_UNKNOWN;
+    const inTok = (a.input_tokens || 0) + (a.cache_creation_input_tokens || 0) * 1.25;
+    cost += inTok * price.input + (a.cache_read_input_tokens || 0) * price.cacheRead + (a.output_tokens || 0) * price.output;
+    input += a.input_tokens || 0;
+    output += a.output_tokens || 0;
+    cacheRead += a.cache_read_input_tokens || 0;
+  }
+  const r = getDb().prepare('INSERT INTO ai_usage (job_id, model, input_tokens, output_tokens, cache_read_tokens, cost_micro_usd) VALUES (?,?,?,?,?,?)')
+    .run(jobId ?? null, message.model || 'unknown', input, output, cacheRead, Math.round(cost));
+  return { id: Number(r.lastInsertRowid), model: message.model };
 }
 
-// ---------- AI result → reads the review screen already understands ----------
-const fold = (s) => String(s ?? '').trim().toLowerCase()
-  .replace(/[ً-ْـ]/g, '').replace(/[أإآ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').replace(/^ال/, '').replace(/\s+/g, ' ');
+// ---------- the reader's answer → op_lines ----------
 const CONF = { high: 0.95, medium: 0.75, low: 0.45 };
+const UNPROVEN = 0.85; // "sure" on a field whose readings have no track record yet
+// Fields that decide money: the model's own "sure" counts only once its readings of that
+// field have proven right after review (or the technician's own total agrees).
+const GATED = new Set(['client_text', 'material_text', 'thickness', 'pieces', 'per_piece', 'total_written', 'sheets',
+  'minutes_per_sheet', 'start_time', 'end_time', 'louvers_per_piece', 'pieces_per_sheet', 'hits_per_piece', 'material_source']);
 
-export function toReads(result, machineCode) {
+export function provenFields() {
+  const rows = getDb().prepare(`SELECT field, COUNT(*) AS n, SUM(CASE WHEN correct = 0 THEN 1 ELSE 0 END) AS wrong
+    FROM ai_reads WHERE confidence >= ${P.SURE} GROUP BY field`).all();
+  return new Set(rows.filter((r) => r.n >= 150 && r.wrong / r.n <= 0.01).map((r) => r.field));
+}
+
+// The reader's rows as raw lines for normalizeLines (trusted: they carry read_json, the
+// confidence per line field). Rows are numbered by their order (free paper repeats numbers).
+export function toLines(result, machine) {
   const db = getDb();
-  const clientName = db.prepare('SELECT name FROM clients WHERE id = ?');
-  const fields = new Set(['client_id', 'part_name', 'material_id', 'thickness', 'work_date', 'material_source', ...(MACHINE_FIELDS[machineCode] || [])]);
-  const reads = [];
-  for (const row of result.rows || []) {
-    if (!Number.isInteger(row.row) || row.row < 1 || row.row > 60) continue;
+  const clientName = db.prepare("SELECT name FROM parties WHERE id = ? AND kind = 'client'");
+  const matName = db.prepare('SELECT name FROM materials WHERE id = ?');
+  const own = new Set(MACHINE_FIELDS[machine] || []);
+  const proven = provenFields();
+  const rows = (result.rows || []).filter((r) => r && typeof r === 'object').slice(0, 200);
+  return rows.map((row) => {
     const base = CONF[row.confidence] ?? 0.45;
-    const unsure = new Set(row.uncertain_fields || []);
-    const ditto = new Set((row.ditto_fields || []).filter((f) => fields.has(f)));
-    const conf = (f) => (unsure.has(f) || (f === 'client_id' && unsure.has('client')) ? Math.min(base, 0.5) : base);
-    // The technician's own total doesn't match: none of the three can be "sure".
-    const sum = ['press', 'shear'].includes(machineCode) && row.pieces != null && row.ops_per_piece != null && row.total_written != null
-      && Math.abs(row.pieces * row.ops_per_piece - row.total_written) > 1e-6;
-    const add = (field, kind, value, c) => reads.push({ row: row.row, field, kind, value, confidence: Math.round(c * 100) / 100, candidates: [], source: 'ai' });
-
-    for (const f of fields) {
-      if (ditto.has(f)) { add(f, 'ditto', null, Math.min(conf(f), 0.85)); continue; }
-      let v = row[f];
-      if (f === 'client_id' && v != null) {
-        // A match to a name written quite differently is worth a look.
-        const name = clientName.get(v)?.name;
-        if (!name) { v = null; } else {
-          const w = fold(row.client_written);
-          const same = w && (fold(name) === w || fold(name).includes(w) || w.includes(fold(name)));
-          add(f, 'value', String(v), same ? conf(f) : Math.min(conf(f), 0.75));
-          continue;
-        }
-      }
-      if (v === null || v === undefined || v === '') continue;
-      if (NUMBERS.includes(f)) {
-        if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) continue;
-        add(f, 'value', String(v), sum && ['pieces', 'ops_per_piece', 'total_written'].includes(f) ? Math.min(conf(f), 0.6) : conf(f));
-      } else if (f === 'work_date') {
-        if (/^\d{4}-\d{2}-\d{2}$/.test(v)) add(f, 'value', v, conf(f));
-      } else {
-        add(f, 'value', String(v), conf(f));
-      }
+    const unsure = new Set((row.uncertain_fields || []).map((f) => TO_LINE[f] || (f === 'client' ? 'client_text' : f === 'material' ? 'material_text' : f)));
+    const has = (...f) => f.every((k) => typeof row[k] === 'number');
+    const agrees = new Set();
+    const disagrees = new Set();
+    if ((machine === 'press' || machine === 'shear') && has('pieces', 'ops_per_piece', 'total_written')) {
+      const ok = Math.abs(row.pieces * row.ops_per_piece - row.total_written) < 1e-6;
+      for (const f of ['pieces', 'per_piece', 'total_written']) (ok ? agrees : disagrees).add(f);
     }
-    // A name we couldn't match: keep what is written, so the reviewer sees it (and can add the client).
-    if (row.client_id == null && row.client_written && !ditto.has('client_id')) add('client_text', 'value', String(row.client_written).slice(0, 80), 0.5);
+    if (machine === 'punch' && has('sheets', 'pieces_per_sheet', 'pieces')) {
+      const ok = Math.abs(row.sheets * row.pieces_per_sheet - row.pieces) < 1e-6;
+      for (const f of ['sheets', 'pieces_per_sheet', 'pieces']) (ok ? agrees : disagrees).add(f);
+    }
+    const conf = (f) => {
+      let c = unsure.has(f) ? Math.min(base, 0.5) : base;
+      if (disagrees.has(f)) c = Math.min(c, 0.6);
+      else if (c >= P.SURE && GATED.has(f) && !proven.has(f) && !agrees.has(f)) c = UNPROVEN;
+      return Math.round(c * 100) / 100;
+    };
+    const line = { ditto_fields: [], notes: '' };
+    const fields = {};
+    const ditto = new Set((row.ditto_fields || []).map((f) => TO_LINE[f] || f));
+    // client: matched id → the official name; else what is written (red until chosen)
+    const cName = row.client_id ? clientName.get(row.client_id)?.name : null;
+    if (cName) {
+      line.client_id = row.client_id;
+      line.client_text = cName;
+      const w = P.foldName(row.client_written);
+      const g = P.foldName(cName);
+      const same = !w || g === w || g.includes(w) || w.includes(g);
+      fields.client_text = { v: row.client_id, c: same ? conf('client_text') : Math.min(conf('client_text'), 0.75), w: row.client_written ?? null };
+    } else if (row.client_written) {
+      line.client_text = String(row.client_written).slice(0, 80);
+      fields.client_text = { v: null, c: 0.5, w: line.client_text };
+    }
+    const mName = row.material_id ? matName.get(row.material_id)?.name : null;
+    if (mName) {
+      line.material_id = row.material_id;
+      line.material_text = row.material_written ? String(row.material_written).slice(0, 60) : mName;
+      fields.material_text = { v: row.material_id, c: conf('material_text') };
+    } else if (row.material_written) {
+      line.material_text = String(row.material_written).slice(0, 60);
+    }
+    if (row.part_name) line.part_name = String(row.part_name).slice(0, 120);
+    if (row.work_date) { line.work_date = row.work_date; fields.work_date = { v: row.work_date, c: conf('work_date') }; }
+    if (row.material_source) { line.material_source = row.material_source; fields.material_source = { v: row.material_source, c: conf('material_source') }; }
+    for (const f of [...NUMBERS, ...TEXTS]) {
+      const lf = TO_LINE[f] || f;
+      if (f !== 'thickness' && !own.has(f)) continue;
+      const v = row[f];
+      if (v === null || v === undefined || v === '') continue;
+      if (NUMBERS.includes(f) && (typeof v !== 'number' || !Number.isFinite(v) || v < 0)) continue;
+      if (f === 'thickness' && v === 0) continue;
+      line[lf] = NUMBERS.includes(f) ? v : String(v).slice(0, 40);
+      fields[lf] = { v: line[lf], c: conf(lf) };
+    }
+    for (const f of ditto) {
+      if (!P.DITTO_FIELDS.includes(f)) continue;
+      line.ditto_fields.push(f);
+      fields[f] = { v: null, c: conf(f), ditto: true };
+    }
+    line.read_json = { fields, confidence: row.confidence || null };
+    return line;
+  });
+}
+
+// After normalizeLines resolved ditto and matching, the reading's values are the line's
+// values (so «nobody changed it» compares like with like).
+export function settleReads(lines) {
+  for (const l of lines) {
+    const f = l.read_json?.fields;
+    if (!f) continue;
+    for (const [k, r] of Object.entries(f)) {
+      if (k === 'client_text') r.v = l.client_id ?? null;
+      else if (k === 'material_text') r.v = l.material_id ?? null;
+      else if (r.ditto) r.v = l[k] ?? null;
+    }
   }
-  return reads;
+  return lines;
 }
 
 // The technician named on the sheet, if he is one of ours.
 export function matchTechnician(name) {
   if (!name) return null;
-  const w = fold(name);
+  const w = P.foldName(name);
+  if (!w) return null;
   const t = getDb().prepare('SELECT id, name FROM technicians WHERE active = 1').all()
-    .find((x) => fold(x.name) === w || fold(x.name).includes(w) || w.includes(fold(x.name)));
+    .find((x) => { const g = P.foldName(x.name); return g === w || g.includes(w) || w.includes(g); });
   return t?.id ?? null;
 }

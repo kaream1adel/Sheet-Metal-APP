@@ -24,3 +24,8 @@ config.bat
 # OS / editor
 .DS_Store
 Thumbs.db
+
+# Spreadsheets (the real workbook never goes in the repo)
+*.xlsx
+*.xlsm
+*.xls

@@ -21,6 +21,27 @@ export async function startApp() {
   return { base, stop };
 }
 
+// The fake Claude API answers a message the way the real one does: as server-sent events
+// when the request asks to stream (the app streams), as JSON otherwise.
+export function sendMessage(req, res, msg) {
+  if (!req.body?.stream) return res.json(msg);
+  res.setHeader('Content-Type', 'text/event-stream');
+  const ev = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+  ev('message_start', { message: { ...msg, content: [], stop_reason: null, stop_sequence: null } });
+  (msg.content || []).forEach((block, index) => {
+    if (block.type === 'text') {
+      ev('content_block_start', { index, content_block: { type: 'text', text: '' } });
+      ev('content_block_delta', { index, delta: { type: 'text_delta', text: block.text } });
+    } else {
+      ev('content_block_start', { index, content_block: block });
+    }
+    ev('content_block_stop', { index });
+  });
+  ev('message_delta', { delta: { stop_reason: msg.stop_reason, stop_sequence: null, stop_details: msg.stop_details ?? null }, usage: { output_tokens: msg.usage?.output_tokens ?? 0 } });
+  ev('message_stop', {});
+  res.end();
+}
+
 // A tiny client that keeps its own session cookie, like one browser.
 export function client(base) {
   let cookie = '';

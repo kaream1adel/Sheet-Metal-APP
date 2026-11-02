@@ -1,7 +1,9 @@
 // Command line helpers.
 //   node src/cli.js create-admin <username> <password> [display name]
 //   node src/cli.js check-db <file>    open + migrate a copy of the data (used by the updater)
-import { openDb, getDb, closeDb } from './db.js';
+//   node src/cli.js import-excel <file> [--apply]   (module import)
+import Database from 'better-sqlite3';
+import { openDb, getDb, closeDb, isLegacyDatabase } from './db.js';
 import { hashPassword, MIN_PASSWORD } from './auth.js';
 
 const [cmd, username, password, ...name] = process.argv.slice(2);
@@ -26,6 +28,15 @@ if (cmd === 'create-admin') {
   closeDb();
 } else if (cmd === 'check-db') {
   try {
+    // The updater of the old (cancelled) app hands us a copy of ITS database. This version
+    // never opens that file (it uses data/safa.sqlite), so it is not ours to migrate.
+    const peek = new Database(username, { readonly: true, fileMustExist: true });
+    let legacy;
+    try { legacy = isLegacyDatabase(peek); } finally { peek.close(); }
+    if (legacy) {
+      console.log('ok (old database, not used by this version)');
+      process.exit(0);
+    }
     openDb(username);
     const ok = getDb().pragma('quick_check', { simple: true });
     closeDb();
@@ -35,7 +46,17 @@ if (cmd === 'create-admin') {
     console.error(err.message);
     process.exit(1);
   }
+} else if (cmd === 'import-excel') {
+  // Owned by the import module (src/import/). Until it lands, say so.
+  try {
+    const mod = await import('./import/cli.js');
+    await mod.run(process.argv.slice(3));
+  } catch (err) {
+    if (err.code === 'ERR_MODULE_NOT_FOUND') console.error('import-excel: قيد البناء');
+    else console.error(err.message);
+    process.exit(1);
+  }
 } else {
-  console.error('commands: create-admin, check-db');
+  console.error('commands: create-admin, check-db, import-excel');
   process.exit(1);
 }

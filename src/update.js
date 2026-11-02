@@ -10,11 +10,11 @@
 import fs from 'fs';
 import os from 'os';
 import crypto from 'crypto';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { spawnSync } from 'child_process';
 import Database from 'better-sqlite3';
-import { getDb, closeDb, dbPath, schemaVersion, LATEST_SCHEMA, audit } from './db.js';
-import { homeDir, ensureDir, dataDir } from './paths.js';
+import { getDb, closeDb, dbPath, schemaVersion, LATEST_SCHEMA, audit, DB_FILE, LEGACY_DB_FILE } from './db.js';
+import { homeDir, ensureDir, dataDir, ROOT } from './paths.js';
 import { VERSION } from './version.js';
 import { getMeta, setMeta } from './settings.js';
 import { makeBackup, backupFile } from './backup.js';
@@ -103,8 +103,11 @@ export function updateStatus() {
     busy,
     can_rollback: !!previous && fs.existsSync(codeDir(previous)),
     previous,
-    // Rolling back after a schema change means going back to the pre-update backup.
-    rollback_loses_data: !!state?.backup && state.to === String(VERSION.build) && schemaVersion() !== state.schema_before,
+    // Rolling back after a schema change means going back to the pre-update backup —
+    // only when that backup is of this same database file. The update from the old app
+    // (state written by the old code, no db_file) left the old database untouched.
+    rollback_loses_data: !!state?.backup && state.to === String(VERSION.build)
+      && (state.db_file || LEGACY_DB_FILE) === DB_FILE && schemaVersion() !== state.schema_before,
     last_update: state,
   };
 }
@@ -185,7 +188,7 @@ export async function applyUpdate(userId) {
     for (const d of fs.readdirSync(versions)) {
       if (d !== build() && d !== current && !d.startsWith('.')) fs.rmSync(join(versions, d), { recursive: true, force: true });
     }
-    const state = { from: current, to: build(), backup, schema_before: schemaVersion(), at: new Date().toISOString() };
+    const state = { from: current, to: build(), backup, db_file: DB_FILE, schema_before: schemaVersion(), at: new Date().toISOString() };
     fs.writeFileSync(stateFile(), JSON.stringify(state, null, 2));
     fs.writeFileSync(file('previous.txt'), current);
     fs.writeFileSync(file('update-trial.txt'), build());
@@ -260,7 +263,7 @@ export function recoverAfterFailedUpdate() {
   try { schema = d.prepare('SELECT COALESCE(MAX(id), 0) v FROM schema_migrations').get().v; } catch { schema = 0; } finally { d.close(); }
   if (schema <= LATEST_SCHEMA) return;
   const state = readState();
-  if (!state?.backup) return; // nothing safe to do; openDb will refuse with a clear message
+  if (!state?.backup || (state.db_file || LEGACY_DB_FILE) !== DB_FILE) return; // nothing safe to do; openDb will refuse with a clear message
   const keep = `${live}.newer-${Date.now()}`;
   for (const ext of ['', '-wal']) if (fs.existsSync(live + ext)) fs.copyFileSync(live + ext, keep + ext); // never lose data silently
   replaceDatabase(backupFile(state.backup));
@@ -281,4 +284,18 @@ export function startUpdateChecks() {
   };
   setTimeout(tick, 60000).unref();
   setInterval(tick, 6 * 3600000).unref();
+}
+
+// SheetMetal-Setup never edits current.txt/previous.txt. When it installs a build newer than
+// the versions\<build> that current.txt names, the launcher runs the Setup's code (next to
+// the launcher) instead. That code takes over here: current.txt → ".", and the version it
+// replaced becomes previous.txt, so «رجوع للنسخة السابقة» still goes back to it.
+export function adoptInstalledCode() {
+  const home = homeDir();
+  if (!home || resolve(ROOT).toLowerCase() !== resolve(home).toLowerCase()) return false; // running from versions\<build> (or dev)
+  const current = readText('current.txt');
+  if (!current || current === '.') return false;
+  fs.writeFileSync(file('previous.txt'), current);
+  fs.writeFileSync(file('current.txt'), '.');
+  return true;
 }

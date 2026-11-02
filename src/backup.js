@@ -4,7 +4,7 @@
 import fs from 'fs';
 import { join } from 'path';
 import Database from 'better-sqlite3';
-import { getDb, openDb, closeDb, dbPath, LATEST_SCHEMA, audit } from './db.js';
+import { getDb, openDb, closeDb, dbPath, LATEST_SCHEMA, audit, isLegacyDatabase } from './db.js';
 import { dataDir, ensureDir } from './paths.js';
 import { getSettings, getMeta, setMeta } from './settings.js';
 import { httpError } from './util.js';
@@ -12,7 +12,10 @@ import { httpError } from './util.js';
 export const REASONS = { startup: 'تشغيل البرنامج', daily: 'يومي', update: 'قبل التحديث', manual: 'يدوي', restore: 'قبل الاسترجاع' };
 // How many of each kind to keep. Startup and daily share one pool.
 const KEEP = { auto: 30, update: 10, manual: 30, restore: 10 };
-const NAME_RE = /^sheet-metal_(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})_(startup|daily|update|manual|restore)(?:-\d+)?\.sqlite$/;
+// "safa_" names this version's backups; the old app's "sheet-metal_" files in the same
+// folder are a different database and are never listed or restored here.
+const PREFIX = 'safa';
+const NAME_RE = /^safa_(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})_(startup|daily|update|manual|restore)(?:-\d+)?\.sqlite$/;
 const DAY_MS = 86400000;
 
 export const backupsDir = () => ensureDir(join(dataDir(), 'backups'));
@@ -41,8 +44,8 @@ export function listBackups() {
 export async function makeBackup(reason) {
   if (!REASONS[reason]) throw new Error(`unknown backup reason ${reason}`);
   const dir = backupsDir();
-  let name = `sheet-metal_${stamp()}_${reason}.sqlite`;
-  for (let i = 2; fs.existsSync(join(dir, name)); i++) name = `sheet-metal_${stamp()}_${reason}-${i}.sqlite`;
+  let name = `${PREFIX}_${stamp()}_${reason}.sqlite`;
+  for (let i = 2; fs.existsSync(join(dir, name)); i++) name = `${PREFIX}_${stamp()}_${reason}-${i}.sqlite`;
   const tmp = join(dir, `.${name}.part`);
   try {
     await getDb().backup(tmp);
@@ -65,7 +68,7 @@ function copyOut(name) {
   if (!target) return setMeta('backup_copy_error', null);
   try {
     if (!fs.existsSync(target)) throw new Error('الفولدر مش موجود (الفلاشة مش متركبة؟)');
-    const sub = ensureDir(join(target, 'Sheet Metal backups'));
+    const sub = ensureDir(join(target, 'Safa backups'));
     fs.copyFileSync(join(backupsDir(), name), join(sub, name));
     copyNewPhotos(join(sub, 'photos'));
     setMeta('backup_copy_error', null);
@@ -112,6 +115,7 @@ export function inspectBackup(file) {
   try {
     d = new Database(file, { readonly: true, fileMustExist: true });
     if (d.pragma('quick_check', { simple: true }) !== 'ok') throw new Error('bad');
+    if (isLegacyDatabase(d)) throw new Error('legacy');
     const schema = d.prepare('SELECT COALESCE(MAX(id), 0) v FROM schema_migrations').get().v;
     const users = d.prepare('SELECT COUNT(*) n FROM users').get().n;
     return { schema, users };

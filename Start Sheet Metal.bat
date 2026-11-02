@@ -26,6 +26,15 @@ set "CUR=."
 if exist "%~dp0current.txt" set /p CUR=<"%~dp0current.txt"
 set "APPDIR=%~dp0"
 if not "%CUR%"=="." set "APPDIR=%~dp0versions\%CUR%\"
+rem A newer SheetMetal-Setup put its code next to this file (Setup never edits current.txt):
+rem run that code; the app then points current.txt at it (src\update.js adoptInstalledCode).
+set "SETUPB=0"
+if exist "%~dp0setup-build.txt" set /p SETUPB=<"%~dp0setup-build.txt"
+set "SETUPN=0"
+set "CURN=0"
+set /a SETUPN=SETUPB >nul 2>nul
+if not "%CUR%"=="." set /a CURN=CUR >nul 2>nul
+if not "%CUR%"=="." if %SETUPN% GTR %CURN% set "APPDIR=%~dp0"
 if not exist "%APPDIR%src\server.js" set "APPDIR=%~dp0"
 
 if not exist "%APPDIR%node_modules\express\package.json" (

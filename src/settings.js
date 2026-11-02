@@ -5,13 +5,12 @@ export const DEFAULT_SETTINGS = {
   company_name: 'شركة الصفا',
   company_phone: '',
   company_address: '',
-  alert_days: 30,               // unpaid this many days after delivery → red in follow-up
-  payment_methods: ['نقدي', 'تحويل بنكي', 'إنستاباي', 'فودافون كاش', 'محفظة إلكترونية', 'شيك'],
+  cheque_alert_days: 3,         // cheques due within this many days show on the home page
   backup_copy_dir: '',          // a USB stick or OneDrive folder that gets a copy of every backup
   tunnel_enabled: true,         // publish the app over HTTPS for phones (cloudflared)
   tunnel_token: '',             // a named Cloudflare tunnel (fixed link); empty = free quick link
   tunnel_url: '',               // the fixed link that goes with the token
-  ai_enabled: false,            // read sheet photos with Claude over the internet
+  ai_enabled: false,            // read sheet photos with Claude over the internet (module operations)
   ai_api_key: '',               // secret: never sent to a browser
   ai_model: 'claude-opus-5-5',
 };
@@ -39,14 +38,7 @@ export function setSettings(values) {
   return getSettings();
 }
 
-// Next serial number for a printed document (statement, delivery note, receipt).
-export function nextSerial(kind) {
-  const db = getDb();
-  const key = `seq_${kind}`;
-  const cur = Number(db.prepare('SELECT v FROM meta WHERE k = ?').get(key)?.v || 0) + 1;
-  db.prepare('INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v').run(key, String(cur));
-  return cur;
-}
+// Serial numbers for documents: nextSerial() in src/ledger.js (table sequences).
 
 // Small internal values (last backup time, last update check, ...).
 export function getMeta(k) {

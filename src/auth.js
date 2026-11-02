@@ -2,7 +2,7 @@
 import crypto from 'crypto';
 import { getDb, audit } from './db.js';
 import { httpError } from './util.js';
-import { can, permissionsOf } from './permissions.js';
+import { can, canAny, permissionsOf } from './permissions.js';
 
 const COOKIE = 'sheetmetal_s';
 const SESSION_DAYS = 30;          // "remember this device"
@@ -80,6 +80,13 @@ export function requireUser(req, _res, next) {
 export const requirePerm = (perm) => (req, _res, next) => {
   if (!req.user) return next(httpError(401, 'لازم تسجل دخول الأول'));
   if (!can(req.user, perm)) return next(httpError(403, 'مش مسموح لك بالحركة دي'));
+  next();
+};
+
+// Any one of several permissions is enough.
+export const requireAny = (...perms) => (req, _res, next) => {
+  if (!req.user) return next(httpError(401, 'لازم تسجل دخول الأول'));
+  if (!canAny(req.user, ...perms)) return next(httpError(403, 'مش مسموح لك بالحركة دي'));
   next();
 };
 
