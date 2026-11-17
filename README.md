@@ -72,7 +72,7 @@ flowchart LR
   (`src/migrations/*.js`), on top of a shared foundation (ledger, money, grid, statement, UI kit).
 - **No framework, no build step.** Express + better-sqlite3 (WAL) on the server; vanilla ES modules, one design
   system and inline Phosphor icons on the client.
-- **Tested.** 196 tests (`node --test`), including an end-to-end run from a technician's sheet to the financial
+- **Tested.** 194 tests (`node --test`), including an end-to-end run from a technician's sheet to the financial
   position, the pricing formulas, the cheque lifecycle, month locks, the importer on a synthetic workbook, and the
   staff money-leak crawl. CI runs them on every push and builds the Windows installer.
 - **Public repo, private data.** `scripts/check-repo.js` refuses data files, spreadsheets and known real figures.
