@@ -25,9 +25,9 @@
 
 [Setup]
 AppId={{6F2B8E4A-5C1D-4E7A-9B3F-2D8C1A0E5F47}
-AppName=Sheet Metal
+AppName=Sheet Metal Management
 AppVersion={#AppVersion}.{#Build}
-AppVerName=Sheet Metal {#AppVersion} ({#Build})
+AppVerName=Sheet Metal Management {#AppVersion} ({#Build})
 AppPublisher=شركة الصفا
 DefaultDirName={sd}\SheetMetal
 ; First install: the user picks the folder. Upgrade: the folder chosen the first time is reused.
@@ -46,12 +46,12 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 CloseApplications=no
-UninstallDisplayName=Sheet Metal
+UninstallDisplayName=Sheet Metal Management
 UninstallDisplayIcon={app}\node\node.exe
 SetupLogging=yes
 
 [Messages]
-WelcomeLabel2=هيتثبت برنامج Sheet Metal على الكمبيوتر ده. في الخطوة الجاية تقدر تختار الفولدر.%n%nكل حاجة بتتعمل لوحدها: البرنامج، Node، لينك الموبايل، والسماح في الفايروول.%n%nلو البرنامج متثبت قبل كده، هيتحدث في نفس الفولدر وبياناتك مش هتتلمس.
+WelcomeLabel2=هيتثبت برنامج Sheet Metal Management على الكمبيوتر ده. في الخطوة الجاية تقدر تختار الفولدر.%n%nكل حاجة بتتعمل لوحدها: البرنامج، Node، لينك الموبايل، والسماح في الفايروول.%n%nلو البرنامج متثبت قبل كده، هيتحدث في نفس الفولدر وبياناتك مش هتتلمس.
 SelectDirLabel3=البرنامج وبياناته (قاعدة البيانات والنسخ الاحتياطية) هيتحطوا في الفولدر ده. اختار مكان على الكمبيوتر نفسه، واسم الفولدر بالإنجليزي.
 SelectDirBrowseLabel=دوس "التالي" عشان تكمل، أو "Browse" عشان تختار فولدر تاني.
 FinishedLabel=البرنامج اتثبت. هيفتح في المتصفح، وأول مرة هيطلب منك تعمل حساب الأدمن.

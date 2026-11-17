@@ -2,7 +2,7 @@
   "name": "sheet-metal",
   "version": "0.1.0",
   "private": true,
-  "description": "شركة الصفا — offline Arabic workshop app: technician sheets, review, pricing, double-entry client accounts, treasury and reports.",
+  "description": "Sheet Metal Management — offline Arabic workshop app: technician sheets, review, pricing, double-entry client accounts, treasury and reports.",
   "type": "module",
   "scripts": {
     "start": "node src/server.js",

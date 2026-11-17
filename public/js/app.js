@@ -75,7 +75,7 @@ function authCard(title, subtitle, fields, buttonLabel, onSubmit) {
   fill(app, h('div', { class: 'auth' },
     h('div', { class: 'pane' }, h('div', { class: 'box' },
       h('div', { class: 'brand', style: 'padding:0 0 22px' }, h('div', { class: 'logo' }, icon('factory', 'lg')),
-        h('div', {}, h('b', {}, 'شركة الصفا'), h('span', {}, 'تشغيل وحسابات الورشة'))),
+        h('div', {}, h('b', {}, 'Sheet Metal Management'), h('span', {}, 'شركة الصفا — تشغيل وحسابات الورشة'))),
       h('h1', {}, title), h('div', { class: 'muted' }, subtitle), form)),
     h('div', { class: 'art' },
       h('b', {}, 'من ورقة الفني لكشف الحساب.'),
@@ -208,7 +208,7 @@ function shell(content) {
     return [head, list];
   });
   const side = h('nav', { class: 'side', 'aria-label': 'القايمة' },
-    h('div', { class: 'brand' }, h('div', { class: 'logo' }, icon('factory')), h('div', {}, h('b', {}, 'شركة الصفا'), h('span', {}, 'تشغيل وحسابات'))),
+    h('div', { class: 'brand' }, h('div', { class: 'logo' }, icon('factory')), h('div', {}, h('b', {}, 'Sheet Metal Management'), h('span', {}, 'شركة الصفا'))),
     items,
     h('div', { class: 'foot' },
       h('div', { class: 'who' }, h('b', {}, state.user.display_name), h('span', {}, `نسخة ${state.version}`)),
