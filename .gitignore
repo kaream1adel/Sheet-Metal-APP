@@ -1,5 +1,6 @@
 # Data never goes into the repo (the repo is public).
 data/
+demo-data/
 backups/
 *.sqlite
 *.sqlite-*
